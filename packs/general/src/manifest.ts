@@ -1,0 +1,56 @@
+import type { ToolManifest, ToolsetManifest } from "../../../shared/types";
+
+// unity-warmup、quit-idle 从 cronkit `src/core/toolset/builtin.ts` 转写；release-occupants 为新增工具。
+
+const unityWarmup: ToolManifest = {
+  id: "unity-warmup",
+  displayName: "Unity 预热",
+  idempotent: true,
+  requiresExclusiveWorkspace: true,
+  lowPriority: true,
+  supportsDryRun: true,
+  platforms: ["win32", "darwin"],
+  params: [
+    { name: "nographics", type: "boolean", default: false },
+    { name: "executeMethod", type: "string" },
+    { name: "path", type: "string" },
+  ],
+};
+
+const quitIdle: ToolManifest = {
+  id: "quit-idle",
+  displayName: "空闲退出进程",
+  idempotent: true,
+  supportsDryRun: true,
+  platforms: ["win32"],
+  params: [
+    { name: "processNames", type: "string[]", required: true },
+    { name: "idleFor", type: "string", required: true },
+    { name: "countIdleFrom", type: "string", default: "00:00" },
+    { name: "until", type: "string", default: "08:00" },
+    { name: "retryInterval", type: "string" },
+    { name: "closeWait", type: "string", default: "3m" },
+  ],
+};
+
+const releaseOccupants: ToolManifest = {
+  id: "release-occupants",
+  displayName: "释放占用进程",
+  description: "关闭占用指定目录（及额外文件）的进程；IDE 只请求正常关闭，不强杀",
+  idempotent: true,
+  supportsDryRun: true,
+  platforms: ["win32"],
+  params: [
+    { name: "path", type: "string", required: true, description: "要释放占用的目录（相对工作目录或绝对路径）" },
+    { name: "extraFiles", type: "string[]", description: "目录之外还要检查的文件" },
+  ],
+};
+
+export const manifest: ToolsetManifest = {
+  id: "general",
+  displayName: "通用工具",
+  schemaVersion: 1,
+  runtime: "node",
+  entry: "dist/pack.mjs",
+  tools: [unityWarmup, quitIdle, releaseOccupants],
+};

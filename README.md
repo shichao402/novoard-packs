@@ -14,10 +14,16 @@ novoard-agent 的通用能力包。协议见 novoard-agent 仓 `docs/adr/0019-ca
 ## 目录
 
 ```
-packs/versionControl/  toolset.json  src/  dist/pack.mjs
-packs/general/         toolset.json  src/  dist/pack.mjs
-shared/                exec.ts  occupants.ts  paths.ts
+packs/versionControl/  toolset.json  src/  dist/pack.mjs  scripts/
+packs/general/         toolset.json  src/  dist/pack.mjs  scripts/
+shared/                exec.ts  occupants.ts  paths.ts  time.ts  types.ts  validate.ts  scripts/*.ps1
+tests/                 vitest 用例（从 cronkit 移植）与 manifest 快照
+scripts/build.mjs      打包、生成 toolset.json、复制 ps1
 ```
+
+- 每个包的 manifest 写在 `packs/<id>/src/manifest.ts`，`toolset.json`、`dist/`、`scripts/` 都由 `npm run build` 生成并提交，不要手改。
+- `npm run check` 依次跑 tsc、vitest、build，再要求 git 无变化；CI 跑的就是它。
+- 包入口 `src/index.ts` 目前导出 `manifest` 与 `run(toolId, params, ctx)`，argv CLI 在 P4 加。
 
 Hub 来源清单配置两条，git 都指向本仓：
 

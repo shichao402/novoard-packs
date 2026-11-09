@@ -1,0 +1,425 @@
+{
+  "id": "versionControl",
+  "displayName": "版本控制",
+  "schemaVersion": 1,
+  "runtime": "node",
+  "entry": "dist/pack.mjs",
+  "tools": [
+    {
+      "id": "svn-update",
+      "displayName": "SVN 更新",
+      "description": "对照远端差异估计将写入的文件；Windows 上可按写集释放占用后再更新",
+      "idempotent": true,
+      "requiresExclusiveWorkspace": true,
+      "supportsDryRun": true,
+      "params": [
+        {
+          "name": "strategy",
+          "type": "enum",
+          "enum": [
+            "follow-latest",
+            "manual",
+            "disabled"
+          ],
+          "default": "follow-latest",
+          "required": true
+        },
+        {
+          "name": "onConflict",
+          "type": "enum",
+          "enum": [
+            "fail",
+            "postpone",
+            "revert"
+          ],
+          "default": "fail",
+          "description": "fail: 冲突即失败；postpone: 保留现场挂起本轮，下轮自动继续；revert: 备份后还原"
+        },
+        {
+          "name": "backupOnRevert",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "backupDir",
+          "type": "string"
+        },
+        {
+          "name": "releaseOccupants",
+          "type": "boolean",
+          "default": true,
+          "description": "按本次将写入的文件释放占用；独占失败会 cleanup 后重试一次。不想强杀就关掉"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "svn-cleanup",
+      "displayName": "SVN Cleanup",
+      "idempotent": true,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "removeUnversioned",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "svn-revert",
+      "displayName": "SVN Revert",
+      "description": "按 svn status 的本地改动估计将改写的文件；Windows 上可先释放占用",
+      "idempotent": true,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "recursive",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "releaseOccupants",
+          "type": "boolean",
+          "default": true,
+          "description": "按本地脏文件释放占用。不想强杀就关掉"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "svn-switch",
+      "displayName": "SVN Switch",
+      "idempotent": false,
+      "requiresExclusiveWorkspace": true,
+      "remoteWrite": false,
+      "params": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "svn-copy",
+      "displayName": "SVN Copy（远端写）",
+      "idempotent": false,
+      "remoteWrite": true,
+      "params": [
+        {
+          "name": "source",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "destination",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "svn-delete",
+      "displayName": "SVN Delete（远端写）",
+      "idempotent": false,
+      "remoteWrite": true,
+      "params": [
+        {
+          "name": "target",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "git-status",
+      "displayName": "Git Status",
+      "description": "查看工作区与分支状态",
+      "idempotent": true,
+      "supportsDryRun": true,
+      "params": [
+        {
+          "name": "path",
+          "type": "string",
+          "description": "相对工作目录的子路径"
+        }
+      ]
+    },
+    {
+      "id": "git-fetch",
+      "displayName": "Git Fetch",
+      "description": "拉取远端引用，不合并",
+      "idempotent": true,
+      "supportsDryRun": true,
+      "params": [
+        {
+          "name": "remote",
+          "type": "string",
+          "description": "远端名；留空则 --all"
+        },
+        {
+          "name": "prune",
+          "type": "boolean",
+          "default": true,
+          "description": "删除远端已不存在的跟踪分支"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-pull",
+      "displayName": "Git Pull",
+      "description": "拉取并更新当前分支（对应 SVN 更新）",
+      "idempotent": true,
+      "requiresExclusiveWorkspace": true,
+      "supportsDryRun": true,
+      "params": [
+        {
+          "name": "strategy",
+          "type": "enum",
+          "enum": [
+            "follow-latest",
+            "manual",
+            "disabled"
+          ],
+          "default": "follow-latest",
+          "required": true,
+          "description": "follow-latest 每次拉取；manual 仅手动触发；disabled 跳过"
+        },
+        {
+          "name": "remote",
+          "type": "string",
+          "description": "远端名，默认 origin（指定 branch 时）"
+        },
+        {
+          "name": "branch",
+          "type": "string",
+          "description": "分支名；留空则拉当前分支的上游"
+        },
+        {
+          "name": "ffOnly",
+          "type": "boolean",
+          "default": true,
+          "description": "仅快进，避免自动合并提交"
+        },
+        {
+          "name": "rebase",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-checkout",
+      "displayName": "Git Checkout",
+      "description": "切换分支或检出指定引用",
+      "idempotent": false,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "ref",
+          "type": "string",
+          "required": true,
+          "description": "分支、tag 或 commit"
+        },
+        {
+          "name": "create",
+          "type": "boolean",
+          "default": false,
+          "description": "不存在则新建分支（-b）"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-stash",
+      "displayName": "Git Stash",
+      "description": "暂存或恢复本地改动",
+      "idempotent": false,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "action",
+          "type": "enum",
+          "enum": [
+            "push",
+            "pop",
+            "drop",
+            "list"
+          ],
+          "default": "push",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "description": "push 时的说明"
+        },
+        {
+          "name": "includeUntracked",
+          "type": "boolean",
+          "default": false,
+          "description": "push 时包含未跟踪文件"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-clean",
+      "displayName": "Git Clean",
+      "description": "删除未跟踪文件",
+      "idempotent": true,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "directories",
+          "type": "boolean",
+          "default": true,
+          "description": "同时删除未跟踪目录（-d）"
+        },
+        {
+          "name": "ignored",
+          "type": "boolean",
+          "default": false,
+          "description": "同时删除被 ignore 的文件（-x）"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-reset",
+      "displayName": "Git Reset",
+      "description": "重置 HEAD / 暂存区 / 工作区",
+      "idempotent": false,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "mode",
+          "type": "enum",
+          "enum": [
+            "mixed",
+            "hard"
+          ],
+          "default": "mixed",
+          "required": true,
+          "description": "mixed 保留工作区改动；hard 丢弃本地改动"
+        },
+        {
+          "name": "ref",
+          "type": "string",
+          "default": "HEAD",
+          "description": "重置到的引用"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-commit",
+      "displayName": "Git Commit",
+      "description": "提交本地改动",
+      "idempotent": false,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "message",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "all",
+          "type": "boolean",
+          "default": true,
+          "description": "提交前 git add -A"
+        },
+        {
+          "name": "allowEmpty",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "git-push",
+      "displayName": "Git Push（远端写）",
+      "description": "推送到远端",
+      "idempotent": false,
+      "remoteWrite": true,
+      "requiresExclusiveWorkspace": true,
+      "params": [
+        {
+          "name": "remote",
+          "type": "string",
+          "default": "origin"
+        },
+        {
+          "name": "ref",
+          "type": "string",
+          "description": "要推送的引用；留空则推当前分支"
+        },
+        {
+          "name": "setUpstream",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "force",
+          "type": "boolean",
+          "default": false,
+          "description": "使用 --force-with-lease，避免覆盖未知远端提交"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    }
+  ]
+}

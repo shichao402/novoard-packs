@@ -1,0 +1,22 @@
+{
+  "name": "novoard-packs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "novoard-agent 的通用能力包：versionControl、general。",
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "check": "npm run typecheck && npm test && npm run build && git diff --exit-code"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.7"
+  }
+}
