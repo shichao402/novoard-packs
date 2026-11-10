@@ -54,4 +54,5 @@ Hub 来源清单配置两条，git 都指向本仓：
 - platforms：
   - versionControl 全平台；
   - general 中 quit-idle、release-occupants 只支持 win32，unity-warmup 支持 win32 与 darwin。
+- quit-idle 新增可选参数 `timeout`（如 `90m`），作为等待空闲的上限。cronkit 原本用步骤 timeout 当上限，agent 的 step 没有单独的 timeout，所以改成显式参数；不传时用 CLI 的 24 小时兜底上限，实际由 agent 整次运行的 timeout 截断。
 - 本仓不放任何内网地址与项目专用工具。项目专用工具放各自项目的能力包（如工蜂 OSGToolset）。

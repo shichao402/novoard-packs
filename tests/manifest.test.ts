@@ -12,9 +12,13 @@ const cronkitTools: ToolManifest[] = JSON.parse(
   readFileSync(path.join(here, "fixtures", "cronkit-builtin-tools.json"), "utf8"),
 );
 const NEW_TOOLS = new Set(["release-occupants"]);
+// cronkit 由步骤 timeout 承担、迁移后需单列的参数
+const NEW_PARAMS: Record<string, string[]> = { "quit-idle": ["timeout"] };
 
 function withoutPlatforms({ platforms: _platforms, ...rest }: ToolManifest): ToolManifest {
-  return rest;
+  const extra = NEW_PARAMS[rest.id];
+  if (!extra || !rest.params) return rest;
+  return { ...rest, params: rest.params.filter((p) => !extra.includes(p.name)) };
 }
 
 describe("manifest 与 cronkit builtin 一致", () => {
@@ -50,6 +54,11 @@ describe("manifest 与 cronkit builtin 一致", () => {
       "quit-idle": ["win32"],
       "release-occupants": ["win32"],
     });
+  });
+
+  it("quit-idle：新增可选 timeout，承接 cronkit 步骤 timeout", () => {
+    const tool = general.tools.find((t) => t.id === "quit-idle");
+    expect(tool?.params?.find((p) => p.name === "timeout")).toEqual({ name: "timeout", type: "string" });
   });
 
   it("release-occupants：path 必填，extraFiles 可选", () => {

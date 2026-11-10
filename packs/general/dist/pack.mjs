@@ -1021,7 +1021,10 @@ var quitIdle = {
     { name: "countIdleFrom", type: "string", default: "00:00" },
     { name: "until", type: "string", default: "08:00" },
     { name: "retryInterval", type: "string" },
-    { name: "closeWait", type: "string", default: "3m" }
+    { name: "closeWait", type: "string", default: "3m" },
+    // cronkit 由步骤 timeout 决定（无 retryInterval 时即正常关闭的等待上限）；agent 只有整次运行的上限，
+    // 所以单列成参数。缺省时用 CLI 兜底上限。
+    { name: "timeout", type: "string" }
   ]
 };
 var releaseOccupants2 = {
@@ -1309,8 +1312,8 @@ async function run(toolId, rawParams, ctx) {
           idleFor: String(params.idleFor),
           countIdleFrom: String(params.countIdleFrom ?? "00:00"),
           until: String(params.until ?? "08:00"),
-          // cronkit 传的是 step 原始 timeout 字符串；这里由 ctx.timeoutMs 还原。
-          timeout: `${Math.max(0, Math.floor(ctx.timeoutMs))}ms`,
+          // cronkit 传的是 step 原始 timeout 字符串；这里优先用 timeout 参数，缺省时由 ctx.timeoutMs 还原。
+          timeout: typeof params.timeout === "string" && params.timeout ? params.timeout : `${Math.max(0, Math.floor(ctx.timeoutMs))}ms`,
           retryInterval: typeof params.retryInterval === "string" ? params.retryInterval : void 0,
           closeWait: typeof params.closeWait === "string" ? params.closeWait : void 0
         },

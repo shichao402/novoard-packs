@@ -30,6 +30,9 @@ const quitIdle: ToolManifest = {
     { name: "until", type: "string", default: "08:00" },
     { name: "retryInterval", type: "string" },
     { name: "closeWait", type: "string", default: "3m" },
+    // cronkit 由步骤 timeout 决定（无 retryInterval 时即正常关闭的等待上限）；agent 只有整次运行的上限，
+    // 所以单列成参数。缺省时用 CLI 兜底上限。
+    { name: "timeout", type: "string" },
   ],
 };
 

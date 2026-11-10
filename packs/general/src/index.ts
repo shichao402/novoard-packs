@@ -51,8 +51,11 @@ export async function run(
           idleFor: String(params.idleFor),
           countIdleFrom: String(params.countIdleFrom ?? "00:00"),
           until: String(params.until ?? "08:00"),
-          // cronkit 传的是 step 原始 timeout 字符串；这里由 ctx.timeoutMs 还原。
-          timeout: `${Math.max(0, Math.floor(ctx.timeoutMs))}ms`,
+          // cronkit 传的是 step 原始 timeout 字符串；这里优先用 timeout 参数，缺省时由 ctx.timeoutMs 还原。
+          timeout:
+            typeof params.timeout === "string" && params.timeout
+              ? params.timeout
+              : `${Math.max(0, Math.floor(ctx.timeoutMs))}ms`,
           retryInterval: typeof params.retryInterval === "string" ? params.retryInterval : undefined,
           closeWait: typeof params.closeWait === "string" ? params.closeWait : undefined,
         },
