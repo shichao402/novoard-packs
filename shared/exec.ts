@@ -155,6 +155,8 @@ export function runCommand(options: {
   lowPriority?: boolean;
   gracefulMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** stdout 每个完整行回调一次（用于进度计数），末尾不完整行在进程结束时补发。 */
+  onStdoutLine?: (line: string) => void;
 }): ExecHandle {
   mkdirSync(path.dirname(options.logFile), { recursive: true });
   const log = createWriteStream(options.logFile, { flags: "a" });
@@ -233,9 +235,21 @@ export function runCommand(options: {
       );
     }
 
+    let pendingLine = "";
+    const emitLines = (text: string, flush: boolean): void => {
+      if (!options.onStdoutLine) return;
+      const parts = (pendingLine + text).split(/\r?\n/);
+      pendingLine = flush ? "" : (parts.pop() ?? "");
+      for (const line of parts) {
+        if (line) options.onStdoutLine(line);
+      }
+    };
+
     proc.stdout?.on("data", (chunk: Buffer) => {
-      stdout = cap(stdout + chunk.toString("utf8"));
+      const text = chunk.toString("utf8");
+      stdout = cap(stdout + text);
       log.write(chunk);
+      emitLines(text, false);
     });
     proc.stderr?.on("data", (chunk: Buffer) => {
       stderr = cap(stderr + chunk.toString("utf8"));
@@ -247,7 +261,10 @@ export function runCommand(options: {
       log.write(message);
       finish(1, null);
     });
-    proc.on("close", (code, signal) => finish(code, signal));
+    proc.on("close", (code, signal) => {
+      emitLines("", true);
+      finish(code, signal);
+    });
 
     timer = setTimeout(() => {
       timedOut = true;

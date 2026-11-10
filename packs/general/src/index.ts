@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isCliEntry, main } from "../../../shared/cli";
 import { releaseOccupants } from "../../../shared/occupants";
 import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
@@ -10,7 +11,7 @@ export { manifest };
 
 const byId = new Map(manifest.tools.map((t) => [t.id, t]));
 
-/** 分发逻辑从 cronkit `runBuiltinTool` 的 unity-warmup/quit-idle 分支移植；argv CLI 留到 P4。 */
+/** 分发逻辑从 cronkit `runBuiltinTool` 的 unity-warmup/quit-idle 分支移植；argv CLI 见 shared/cli（P4）。 */
 export async function run(
   toolId: string,
   rawParams: Record<string, unknown> | undefined,
@@ -76,4 +77,8 @@ async function runReleaseOccupants(params: Record<string, unknown>, ctx: ToolRun
     detail: closed.length > 0 ? `已结束占用进程 ${fmt(closed)}` : "没有需要释放的占用进程",
     code: 0,
   };
+}
+
+if (isCliEntry(import.meta.url)) {
+  await main(manifest, run);
 }

@@ -1,3 +1,4 @@
+import { isCliEntry, main } from "../../../shared/cli";
 import { runCommand } from "../../../shared/exec";
 import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
@@ -9,7 +10,7 @@ export { manifest };
 
 const byId = new Map(manifest.tools.map((t) => [t.id, t]));
 
-/** 分发逻辑从 cronkit `runBuiltinTool` 的 svn/git 分支移植；argv CLI 留到 P4。 */
+/** 分发逻辑从 cronkit `runBuiltinTool` 的 svn/git 分支移植；argv CLI 见 shared/cli（P4）。 */
 export async function run(
   toolId: string,
   rawParams: Record<string, unknown> | undefined,
@@ -83,6 +84,7 @@ async function runSvnUpdate(params: Record<string, unknown>, ctx: ToolRunContext
     backupDir: typeof params.backupDir === "string" ? params.backupDir : undefined,
     localDate: ctx.localDate,
     releaseOccupants: params.releaseOccupants !== false,
+    onProgress: ctx.onProgress,
   });
   return { detail: result.detail, code: result.code, skipped: result.skipped };
 }
@@ -112,4 +114,8 @@ async function runSvnArgs(
 
 function tail(text: string): string {
   return text.trim().split(/\r?\n/).filter(Boolean).slice(-8).join("\n");
+}
+
+if (isCliEntry(import.meta.url)) {
+  await main(manifest, run);
 }

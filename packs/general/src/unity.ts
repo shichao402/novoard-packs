@@ -14,6 +14,18 @@ function splitCompleteLines(buffer: string): { lines: string[]; rest: string } {
   return { lines: parts, rest };
 }
 
+/**
+ * batchmode 下 Unity 把进度条写成 `DisplayProgressbar: <标题> (<N>%)` 一类的行，从中取百分比（0–100）。
+ * 其他行或没有百分号时返回 null。
+ */
+export function unityProgressPercent(line: string): number | null {
+  if (!/DisplayProgressbar/i.test(line)) return null;
+  const match = /(\d{1,3}(?:\.\d+)?)\s*%/.exec(line);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.floor(value))) : null;
+}
+
 export type UnityLogTail = {
   stop: () => void;
   warnings: () => string[];
@@ -23,14 +35,15 @@ export type UnityLogTail = {
 
 /**
  * 跟随 Unity 的 -logFile 做增量读取：
- * - 每 20s 把最近一行日志作为心跳推给 onProgress（UI 实时可见导入没卡死）；
+ * - 每 20s 把最近一行日志作为心跳推给 onProgress（UI 实时可见导入没卡死），
+ *   本次采样里出现过 DisplayProgressbar 百分比时一并带上（取最新一条）；
  * - 含 error/exception/failed 的行视为告警，最多保留 40 条（去重）防刷屏；
  * - 处理 BOM、日志截断重置（size 变小则从头读）。
  * 日志文件由 Unity 启动后才创建，采样间隔内不存在属正常。
  */
 export function followUnityLog(
   logFile: string,
-  onProgress: (line: string) => void,
+  onProgress: (line: string, percent?: number | null) => void,
 ): UnityLogTail {
   let stopped = false;
   let offset = 0;
@@ -79,12 +92,14 @@ export function followUnityLog(
     const { lines, rest } = splitCompleteLines(partial + text);
     partial = rest;
     let lastLine = "";
+    let percent: number | null = null;
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
       }
       lastLine = trimmed;
+      percent = unityProgressPercent(trimmed) ?? percent;
       const lower = trimmed.toLowerCase();
       if (UNITY_WARN_KEYWORDS.some((kw) => lower.includes(kw))) {
         if (warnLines.length < MAX_WARNINGS && !warnSeen.has(trimmed)) {
@@ -94,7 +109,7 @@ export function followUnityLog(
       }
     }
     if (lastLine) {
-      onProgress(lastLine);
+      onProgress(lastLine, percent);
     }
   };
 
@@ -203,7 +218,7 @@ export async function warmupUnity(options: {
   nographics?: boolean;
   executeMethod?: string | null;
   lowPriority?: boolean;
-  onProgress?: (line: string) => void;
+  onProgress?: (line: string, percent?: number | null) => void;
 }): Promise<{ detail: string; code: number | null }> {
   if (!existsSync(options.projectPath)) {
     throw new Error(`工程不存在: ${options.projectPath}`);

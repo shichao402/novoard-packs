@@ -1,16 +1,321 @@
 // packs/general/src/index.ts
-import path5 from "node:path";
+import path6 from "node:path";
+
+// shared/cli.ts
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// shared/time.ts
+function parseTimeout(value) {
+  const match = value.match(/^(\d+)(ms|s|m|h)$/);
+  if (!match) {
+    throw new Error(`\u65E0\u6548 timeout: ${value}`);
+  }
+  const amount = Number(match[1]);
+  const unit = match[2];
+  if (unit === "ms") return amount;
+  if (unit === "s") return amount * 1e3;
+  if (unit === "m") return amount * 6e4;
+  return amount * 36e5;
+}
+function localDate(timezone, at = /* @__PURE__ */ new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(at);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  return `${year}-${month}-${day}`;
+}
+
+// shared/validate.ts
+function validateToolParams(tool, raw, rawArgs) {
+  const errors = [];
+  const input = { ...raw ?? {} };
+  const specs = tool.params ?? [];
+  const known = new Set(specs.map((s) => s.name));
+  if (rawArgs && rawArgs.length > 0 && !tool.allowRawArgs) {
+    errors.push(`\u5DE5\u5177 ${tool.id} \u4E0D\u5141\u8BB8 raw args`);
+  }
+  for (const key of Object.keys(input)) {
+    if (!known.has(key)) {
+      errors.push(`\u672A\u77E5\u53C2\u6570: ${key}`);
+    }
+  }
+  const params = {};
+  for (const spec of specs) {
+    const has = Object.prototype.hasOwnProperty.call(input, spec.name);
+    let value = has ? input[spec.name] : spec.default;
+    if (value === void 0 || value === null) {
+      if (spec.required) {
+        errors.push(`\u7F3A\u5C11\u5FC5\u586B\u53C2\u6570: ${spec.name}`);
+      }
+      continue;
+    }
+    const coerced = coerceParam(spec, value);
+    if (coerced.error) {
+      errors.push(coerced.error);
+      continue;
+    }
+    params[spec.name] = coerced.value;
+  }
+  return { params, errors };
+}
+function coerceParam(spec, value) {
+  switch (spec.type) {
+    case "string":
+      if (typeof value !== "string") {
+        return { error: `${spec.name} \u5E94\u4E3A string` };
+      }
+      return { value };
+    case "number":
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return { error: `${spec.name} \u5E94\u4E3A number` };
+      }
+      return { value };
+    case "boolean":
+      if (typeof value !== "boolean") {
+        return { error: `${spec.name} \u5E94\u4E3A boolean` };
+      }
+      return { value };
+    case "string[]":
+      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+        return { error: `${spec.name} \u5E94\u4E3A string[]` };
+      }
+      return { value };
+    case "enum": {
+      if (typeof value !== "string") {
+        return { error: `${spec.name} \u5E94\u4E3A\u679A\u4E3E\u5B57\u7B26\u4E32` };
+      }
+      if (spec.enum && !spec.enum.includes(value)) {
+        return { error: `${spec.name} \u5FC5\u987B\u662F ${spec.enum.join("|")}` };
+      }
+      return { value };
+    }
+    default:
+      return { error: `${spec.name} \u672A\u77E5\u7C7B\u578B` };
+  }
+}
+
+// shared/cli.ts
+var EXIT = { OK: 0, FAIL: 1, USAGE: 64, UNEXPECTED: 99, INTERRUPTED: 130 };
+var FALLBACK_TIMEOUT_MS = 24 * 60 * 6e4;
+var UsageError = class extends Error {
+};
+function usage(manifest2) {
+  const ids = manifest2.tools.map((t) => t.id).join(" | ");
+  return `\u7528\u6CD5\uFF1Anode dist/pack.mjs <${ids}> --project-root <\u76EE\u5F55> [--dry-run] [--result-json <\u6587\u4EF6>] [--<\u53C2\u6570> <\u503C> ...]`;
+}
+function kebabToCamel(name) {
+  return name.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+function parseArgv(manifest2, argv) {
+  const toolId = argv[0];
+  if (!toolId || toolId.startsWith("-")) {
+    throw new UsageError(`\u7F3A\u5C11\u5DE5\u5177\u540D\u3002${usage(manifest2)}`);
+  }
+  const tool = manifest2.tools.find((t) => t.id === toolId);
+  if (!tool) {
+    throw new UsageError(`${manifest2.id} \u6CA1\u6709\u5DE5\u5177 ${toolId}\u3002${usage(manifest2)}`);
+  }
+  const specs = new Map((tool.params ?? []).map((s) => [s.name, s]));
+  const params = {};
+  let projectRoot;
+  let resultJson;
+  let dryRun = false;
+  for (let i = 1; i < argv.length; i++) {
+    const token = argv[i];
+    if (!token.startsWith("--")) {
+      throw new UsageError(`\u591A\u4F59\u7684\u4F4D\u7F6E\u53C2\u6570\uFF1A${token}`);
+    }
+    const eq = token.indexOf("=");
+    const name = token.slice(2, eq >= 0 ? eq : void 0);
+    const inline = eq >= 0 ? token.slice(eq + 1) : void 0;
+    const takeValue = () => {
+      if (inline !== void 0) return inline;
+      const next = argv[i + 1];
+      if (next === void 0 || next.startsWith("--")) {
+        throw new UsageError(`--${name} \u9700\u8981\u4E00\u4E2A\u503C`);
+      }
+      i += 1;
+      return next;
+    };
+    const parseBool = () => {
+      if (inline === void 0 || inline === "true") return true;
+      if (inline === "false") return false;
+      throw new UsageError(`--${name} \u53EA\u80FD\u662F --${name} \u6216 --${name}=false`);
+    };
+    if (name === "project-root") {
+      projectRoot = takeValue();
+      continue;
+    }
+    if (name === "result-json") {
+      resultJson = takeValue();
+      continue;
+    }
+    if (name === "dry-run") {
+      dryRun = parseBool();
+      continue;
+    }
+    const key = kebabToCamel(name);
+    const spec = specs.get(key);
+    if (!spec) {
+      throw new UsageError(`${tool.id} \u6CA1\u6709\u53C2\u6570 --${name}`);
+    }
+    switch (spec.type) {
+      case "boolean":
+        params[key] = parseBool();
+        break;
+      case "number": {
+        const raw = takeValue();
+        const value = Number(raw);
+        if (raw.trim() === "" || Number.isNaN(value)) {
+          throw new UsageError(`--${name} \u5E94\u4E3A\u6570\u5B57\uFF1A${raw}`);
+        }
+        params[key] = value;
+        break;
+      }
+      case "string[]": {
+        const list = params[key] ?? [];
+        list.push(takeValue());
+        params[key] = list;
+        break;
+      }
+      default:
+        params[key] = takeValue();
+    }
+  }
+  if (!projectRoot) {
+    throw new UsageError(`\u7F3A\u5C11 --project-root\u3002${usage(manifest2)}`);
+  }
+  const { errors } = validateToolParams(tool, params);
+  if (errors.length > 0) {
+    throw new UsageError(errors.join("; "));
+  }
+  return { tool, projectRoot: path.resolve(projectRoot), dryRun, resultJson, params };
+}
+function peekResultJson(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--result-json") return argv[i + 1];
+    if (argv[i].startsWith("--result-json=")) return argv[i].slice("--result-json=".length);
+  }
+  return void 0;
+}
+function writeResult(file, value) {
+  if (!file) return;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(value)}
+`, "utf8");
+  } catch {
+  }
+}
+function isUnexpected(error) {
+  return error instanceof TypeError || error instanceof ReferenceError || error instanceof RangeError || error instanceof SyntaxError;
+}
+async function runCli(manifest2, run2, argv, io = {}) {
+  const out = io.out ?? ((line) => process.stdout.write(`${line}
+`));
+  const err = io.err ?? ((line) => process.stderr.write(`${line}
+`));
+  const signals = io.signals === void 0 ? process : io.signals;
+  const now = io.now ?? (() => /* @__PURE__ */ new Date());
+  let parsed;
+  try {
+    parsed = parseArgv(manifest2, argv);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeResult(peekResultJson(argv), { detail: message });
+    err(message);
+    return error instanceof UsageError ? EXIT.USAGE : EXIT.UNEXPECTED;
+  }
+  const controller = new AbortController();
+  const onSignal = () => controller.abort();
+  signals?.on("SIGTERM", onSignal);
+  signals?.on("SIGINT", onSignal);
+  const stamp = now().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+  const logFile = path.join(io.logDir ?? path.join(os.tmpdir(), "novoard-packs"), `${manifest2.id}-${parsed.tool.id}-${stamp}-${process.pid}.log`);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const ctx = {
+    cwd: parsed.projectRoot,
+    workspacePath: parsed.projectRoot,
+    timeoutMs: io.timeoutMs ?? FALLBACK_TIMEOUT_MS,
+    logFile,
+    abortSignal: controller.signal,
+    dryRun: parsed.dryRun,
+    resultJsonPath: parsed.resultJson,
+    localDate: localDate(timezone, now()),
+    onProgress: (message, percent) => {
+      const frame = { type: "progress", message };
+      if (typeof percent === "number" && Number.isFinite(percent)) frame.percent = Math.max(0, Math.min(100, percent));
+      out(JSON.stringify(frame));
+    }
+  };
+  try {
+    if (!parsed.dryRun) out(`\u65E5\u5FD7\uFF1A${logFile}`);
+    const result = await run2(parsed.tool.id, parsed.params, ctx);
+    if (controller.signal.aborted) {
+      writeResult(parsed.resultJson, { detail: "\u5DF2\u53D6\u6D88" });
+      err("\u5DF2\u53D6\u6D88");
+      return EXIT.INTERRUPTED;
+    }
+    if (result.code !== 0) {
+      const detail = result.detail || `${parsed.tool.displayName} \u9000\u51FA\u7801 ${result.code}`;
+      writeResult(parsed.resultJson, { detail });
+      err(detail);
+      return EXIT.FAIL;
+    }
+    writeResult(parsed.resultJson, { detail: result.detail, ...result.skipped ? { skipped: true } : {} });
+    out(result.detail);
+    return EXIT.OK;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      writeResult(parsed.resultJson, { detail: "\u5DF2\u53D6\u6D88" });
+      err("\u5DF2\u53D6\u6D88");
+      return EXIT.INTERRUPTED;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    writeResult(parsed.resultJson, { detail: message });
+    if (isUnexpected(error)) {
+      err(error instanceof Error && error.stack ? error.stack : message);
+      return EXIT.UNEXPECTED;
+    }
+    err(message);
+    return EXIT.FAIL;
+  } finally {
+    signals?.off("SIGTERM", onSignal);
+    signals?.off("SIGINT", onSignal);
+  }
+}
+function isCliEntry(moduleUrl) {
+  const script = process.argv[1];
+  if (!script) return false;
+  try {
+    return realpathSync(script) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+async function main(manifest2, run2) {
+  const code = await runCli(manifest2, run2, process.argv.slice(2));
+  process.stdout.write("", () => process.exit(code));
+}
 
 // shared/occupants.ts
-import { closeSync, existsSync, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path2 from "node:path";
-import { fileURLToPath } from "node:url";
+import { closeSync, existsSync, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import os2 from "node:os";
+import path3 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // shared/exec.ts
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
-import path from "node:path";
+import { createWriteStream, mkdirSync as mkdirSync2 } from "node:fs";
+import path2 from "node:path";
 var STRIP_ENV = /* @__PURE__ */ new Set(["VSCODE_NLS_CONFIG", "VSCODE_PID", "VSCODE_CWD", "VSCODE_NLS_CONFIG_JSON"]);
 function buildChildEnv(base = process.env) {
   const env = { ...base };
@@ -109,7 +414,7 @@ function spawnCaptured(options) {
   });
 }
 function runCommand(options) {
-  mkdirSync(path.dirname(options.logFile), { recursive: true });
+  mkdirSync2(path2.dirname(options.logFile), { recursive: true });
   const log = createWriteStream(options.logFile, { flags: "a" });
   log.write(`$ ${options.command} ${options.args.join(" ")}
 cwd=${options.cwd}
@@ -180,9 +485,20 @@ cwd=${options.cwd}
         { windowsHide: true, stdio: "ignore" }
       );
     }
+    let pendingLine = "";
+    const emitLines = (text, flush) => {
+      if (!options.onStdoutLine) return;
+      const parts = (pendingLine + text).split(/\r?\n/);
+      pendingLine = flush ? "" : parts.pop() ?? "";
+      for (const line of parts) {
+        if (line) options.onStdoutLine(line);
+      }
+    };
     proc.stdout?.on("data", (chunk) => {
-      stdout = cap(stdout + chunk.toString("utf8"));
+      const text = chunk.toString("utf8");
+      stdout = cap(stdout + text);
       log.write(chunk);
+      emitLines(text, false);
     });
     proc.stderr?.on("data", (chunk) => {
       stderr = cap(stderr + chunk.toString("utf8"));
@@ -195,7 +511,10 @@ cwd=${options.cwd}
       log.write(message);
       finish(1, null);
     });
-    proc.on("close", (code, signal) => finish(code, signal));
+    proc.on("close", (code, signal) => {
+      emitLines("", true);
+      finish(code, signal);
+    });
     timer = setTimeout(() => {
       timedOut = true;
       cancelled = true;
@@ -263,8 +582,8 @@ var ALWAYS_RELEASE = /* @__PURE__ */ new Set([
 ]);
 var NEVER_FORCE_KILL = ["rider", "idea", "clion", "webstorm", "pycharm", "goland", "devenv"];
 function helperScript() {
-  const here = path2.dirname(fileURLToPath(import.meta.url));
-  const found = path2.resolve(here, "../scripts/list-occupants.ps1");
+  const here = path3.dirname(fileURLToPath2(import.meta.url));
+  const found = path3.resolve(here, "../scripts/list-occupants.ps1");
   if (!existsSync(found)) {
     throw new Error(`\u627E\u4E0D\u5230 ${found}`);
   }
@@ -302,9 +621,9 @@ function writeFileList(extraFiles) {
   if (files.length === 0) {
     return void 0;
   }
-  const dir = mkdtempSync(path2.join(os.tmpdir(), "novoard-packs-occ-"));
-  const listFile = path2.join(dir, "files.txt");
-  writeFileSync(listFile, `\uFEFF${files.join("\r\n")}\r
+  const dir = mkdtempSync(path3.join(os2.tmpdir(), "novoard-packs-occ-"));
+  const listFile = path3.join(dir, "files.txt");
+  writeFileSync2(listFile, `\uFEFF${files.join("\r\n")}\r
 `, "utf8");
   return {
     listFile,
@@ -330,16 +649,16 @@ function parseOccupantJson(stdout) {
   }
 }
 function isAlwaysRelease(item) {
-  const base = path2.parse(item.name).name.toLowerCase();
+  const base = path3.parse(item.name).name.toLowerCase();
   const full = item.name.toLowerCase();
   return [...ALWAYS_RELEASE].some((name) => base.includes(name) || full.includes(name));
 }
 function isNeverForceKill(item) {
-  const base = path2.parse(item.name).name.toLowerCase();
+  const base = path3.parse(item.name).name.toLowerCase();
   return NEVER_FORCE_KILL.some((name) => base.includes(name));
 }
 function isUnityEditorFamily(item) {
-  const base = path2.parse(item.name).name.toLowerCase();
+  const base = path3.parse(item.name).name.toLowerCase();
   const full = item.name.toLowerCase();
   return ["unity", "unitycrashhandler", "unityshadercompiler", "unity.licensing.client"].some(
     (name) => base.includes(name) || full.includes(name)
@@ -352,7 +671,7 @@ function filterReleasable(occupants) {
     if (self.has(item.pid)) {
       continue;
     }
-    const base = path2.parse(item.name).name.toLowerCase();
+    const base = path3.parse(item.name).name.toLowerCase();
     if (PROTECTED_NAMES.has(base) && !isAlwaysRelease(item)) {
       continue;
     }
@@ -420,8 +739,8 @@ function isUnityLockHeld(lockFile) {
 }
 function unityLockFiles(workspaceRoot) {
   return [
-    path2.join(workspaceRoot, "Temp", "UnityLockfile"),
-    path2.join(workspaceRoot, "Project", "Temp", "UnityLockfile")
+    path3.join(workspaceRoot, "Temp", "UnityLockfile"),
+    path3.join(workspaceRoot, "Project", "Temp", "UnityLockfile")
   ].filter((file) => existsSync(file));
 }
 async function taskkill(pid, force, abortSignal) {
@@ -551,99 +870,14 @@ async function clearStaleUnityLocks(workspaceRoot, waitMsMax, abortSignal) {
   }
 }
 
-// shared/validate.ts
-function validateToolParams(tool, raw, rawArgs) {
-  const errors = [];
-  const input = { ...raw ?? {} };
-  const specs = tool.params ?? [];
-  const known = new Set(specs.map((s) => s.name));
-  if (rawArgs && rawArgs.length > 0 && !tool.allowRawArgs) {
-    errors.push(`\u5DE5\u5177 ${tool.id} \u4E0D\u5141\u8BB8 raw args`);
-  }
-  for (const key of Object.keys(input)) {
-    if (!known.has(key)) {
-      errors.push(`\u672A\u77E5\u53C2\u6570: ${key}`);
-    }
-  }
-  const params = {};
-  for (const spec of specs) {
-    const has = Object.prototype.hasOwnProperty.call(input, spec.name);
-    let value = has ? input[spec.name] : spec.default;
-    if (value === void 0 || value === null) {
-      if (spec.required) {
-        errors.push(`\u7F3A\u5C11\u5FC5\u586B\u53C2\u6570: ${spec.name}`);
-      }
-      continue;
-    }
-    const coerced = coerceParam(spec, value);
-    if (coerced.error) {
-      errors.push(coerced.error);
-      continue;
-    }
-    params[spec.name] = coerced.value;
-  }
-  return { params, errors };
-}
-function coerceParam(spec, value) {
-  switch (spec.type) {
-    case "string":
-      if (typeof value !== "string") {
-        return { error: `${spec.name} \u5E94\u4E3A string` };
-      }
-      return { value };
-    case "number":
-      if (typeof value !== "number" || Number.isNaN(value)) {
-        return { error: `${spec.name} \u5E94\u4E3A number` };
-      }
-      return { value };
-    case "boolean":
-      if (typeof value !== "boolean") {
-        return { error: `${spec.name} \u5E94\u4E3A boolean` };
-      }
-      return { value };
-    case "string[]":
-      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-        return { error: `${spec.name} \u5E94\u4E3A string[]` };
-      }
-      return { value };
-    case "enum": {
-      if (typeof value !== "string") {
-        return { error: `${spec.name} \u5E94\u4E3A\u679A\u4E3E\u5B57\u7B26\u4E32` };
-      }
-      if (spec.enum && !spec.enum.includes(value)) {
-        return { error: `${spec.name} \u5FC5\u987B\u662F ${spec.enum.join("|")}` };
-      }
-      return { value };
-    }
-    default:
-      return { error: `${spec.name} \u672A\u77E5\u7C7B\u578B` };
-  }
-}
-
 // packs/general/src/idle-quit.ts
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "node:fs";
-import path3 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// shared/time.ts
-function parseTimeout(value) {
-  const match = value.match(/^(\d+)(ms|s|m|h)$/);
-  if (!match) {
-    throw new Error(`\u65E0\u6548 timeout: ${value}`);
-  }
-  const amount = Number(match[1]);
-  const unit = match[2];
-  if (unit === "ms") return amount;
-  if (unit === "s") return amount * 1e3;
-  if (unit === "m") return amount * 6e4;
-  return amount * 36e5;
-}
-
-// packs/general/src/idle-quit.ts
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync3 } from "node:fs";
+import path4 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 function helperScript2() {
-  const here = path3.dirname(fileURLToPath2(import.meta.url));
-  const found = path3.resolve(here, "../scripts/quit-idle-apps.ps1");
+  const here = path4.dirname(fileURLToPath3(import.meta.url));
+  const found = path4.resolve(here, "../scripts/quit-idle-apps.ps1");
   if (!existsSync2(found)) {
     throw new Error(`\u627E\u4E0D\u5230 ${found}`);
   }
@@ -660,7 +894,7 @@ function parseJsonTail(stdout) {
   throw new Error(stdout.trim() || "quit-idle \u6CA1\u6709\u8F93\u51FA");
 }
 async function quitIdleApps(step, logFile) {
-  mkdirSync2(path3.dirname(logFile), { recursive: true });
+  mkdirSync3(path4.dirname(logFile), { recursive: true });
   const log = (line) => {
     appendFileSync(logFile, `${line}
 `, "utf8");
@@ -814,12 +1048,19 @@ var manifest = {
 // packs/general/src/unity.ts
 import { closeSync as closeSync2, existsSync as existsSync3, openSync as openSync2, readFileSync, readdirSync, readSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
 import { homedir } from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 var UNITY_WARN_KEYWORDS = ["error", "exception", "failed"];
 function splitCompleteLines(buffer) {
   const parts = buffer.split(/\r?\n/);
   const rest = parts.pop() ?? "";
   return { lines: parts, rest };
+}
+function unityProgressPercent(line) {
+  if (!/DisplayProgressbar/i.test(line)) return null;
+  const match = /(\d{1,3}(?:\.\d+)?)\s*%/.exec(line);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.floor(value))) : null;
 }
 function followUnityLog(logFile, onProgress) {
   let stopped = false;
@@ -867,12 +1108,14 @@ function followUnityLog(logFile, onProgress) {
     const { lines, rest } = splitCompleteLines(partial + text);
     partial = rest;
     let lastLine = "";
+    let percent = null;
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
       }
       lastLine = trimmed;
+      percent = unityProgressPercent(trimmed) ?? percent;
       const lower = trimmed.toLowerCase();
       if (UNITY_WARN_KEYWORDS.some((kw) => lower.includes(kw))) {
         if (warnLines.length < MAX_WARNINGS && !warnSeen.has(trimmed)) {
@@ -882,7 +1125,7 @@ function followUnityLog(logFile, onProgress) {
       }
     }
     if (lastLine) {
-      onProgress(lastLine);
+      onProgress(lastLine, percent);
     }
   };
   const timer = setInterval(sample, HEARTBEAT_MS);
@@ -897,7 +1140,7 @@ function followUnityLog(logFile, onProgress) {
   };
 }
 function readProjectVersion(projectPath) {
-  const file = path4.join(projectPath, "ProjectSettings", "ProjectVersion.txt");
+  const file = path5.join(projectPath, "ProjectSettings", "ProjectVersion.txt");
   if (!existsSync3(file)) {
     throw new Error(`\u672A\u627E\u5230 ${file}`);
   }
@@ -915,23 +1158,23 @@ function listUnityEditors() {
       found.set(exe.toLowerCase(), { version, exe });
     }
   };
-  const hubDir = path4.join(homedir(), "AppData", "Roaming", "UnityHub");
-  const editorsV2 = path4.join(hubDir, "editors-v2.json");
+  const hubDir = path5.join(homedir(), "AppData", "Roaming", "UnityHub");
+  const editorsV2 = path5.join(hubDir, "editors-v2.json");
   if (existsSync3(editorsV2)) {
     try {
       const json = JSON.parse(readFileSync(editorsV2, "utf8"));
       for (const editor of json.data ?? []) {
         for (const location of editor.location ?? []) {
-          add(editor.version ?? path4.basename(path4.dirname(location)), location);
+          add(editor.version ?? path5.basename(path5.dirname(location)), location);
         }
       }
     } catch {
     }
   }
-  const secondary = path4.join(hubDir, "secondaryInstallPath.json");
+  const secondary = path5.join(hubDir, "secondaryInstallPath.json");
   const extraRoots = [
-    path4.join(process.env["ProgramFiles"] ?? "C:/Program Files", "Unity/Hub/Editor"),
-    path4.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Unity/Hub/Editor")
+    path5.join(process.env["ProgramFiles"] ?? "C:/Program Files", "Unity/Hub/Editor"),
+    path5.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Unity/Hub/Editor")
   ];
   if (existsSync3(secondary)) {
     const raw = readFileSync(secondary, "utf8").replace(/^"|"$/g, "").trim();
@@ -947,7 +1190,7 @@ function listUnityEditors() {
       if (!name.isDirectory()) {
         continue;
       }
-      const exe = path4.join(root, name.name, "Editor", "Unity.exe");
+      const exe = path5.join(root, name.name, "Editor", "Unity.exe");
       add(name.name, exe);
     }
   }
@@ -973,7 +1216,7 @@ async function warmupUnity(options) {
   if (!existsSync3(options.projectPath)) {
     throw new Error(`\u5DE5\u7A0B\u4E0D\u5B58\u5728: ${options.projectPath}`);
   }
-  const lockFile = path4.join(options.projectPath, "Temp", "UnityLockfile");
+  const lockFile = path5.join(options.projectPath, "Temp", "UnityLockfile");
   if (isUnityLockHeld(lockFile)) {
     throw new Error("Unity \u6B63\u5728\u4F7F\u7528\u8BE5\u9879\u76EE\uFF08Temp/UnityLockfile \u88AB\u5360\u7528\uFF09\uFF0C\u9884\u70ED\u524D\u672A\u80FD\u91CA\u653E\u5DF2\u6253\u5F00\u7684 Unity");
   }
@@ -1080,8 +1323,8 @@ async function run(toolId, rawParams, ctx) {
   }
 }
 async function runReleaseOccupants(params, ctx) {
-  const target = path5.resolve(ctx.cwd, String(params.path));
-  const extraFiles = params.extraFiles?.map((f) => path5.resolve(ctx.cwd, f));
+  const target = path6.resolve(ctx.cwd, String(params.path));
+  const extraFiles = params.extraFiles?.map((f) => path6.resolve(ctx.cwd, f));
   const { closed, remaining } = await releaseOccupants({ target, extraFiles, abortSignal: ctx.abortSignal });
   const fmt = (list) => list.map((o) => `${o.name}(${o.pid})`).join(", ");
   if (remaining.length > 0) {
@@ -1091,6 +1334,9 @@ async function runReleaseOccupants(params, ctx) {
     detail: closed.length > 0 ? `\u5DF2\u7ED3\u675F\u5360\u7528\u8FDB\u7A0B ${fmt(closed)}` : "\u6CA1\u6709\u9700\u8981\u91CA\u653E\u7684\u5360\u7528\u8FDB\u7A0B",
     code: 0
   };
+}
+if (isCliEntry(import.meta.url)) {
+  await main(manifest, run);
 }
 export {
   manifest,

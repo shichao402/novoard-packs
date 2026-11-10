@@ -1,7 +1,300 @@
+// shared/cli.ts
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// shared/time.ts
+function localDate(timezone, at = /* @__PURE__ */ new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(at);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  return `${year}-${month}-${day}`;
+}
+
+// shared/validate.ts
+function validateToolParams(tool, raw, rawArgs) {
+  const errors = [];
+  const input = { ...raw ?? {} };
+  const specs = tool.params ?? [];
+  const known = new Set(specs.map((s) => s.name));
+  if (rawArgs && rawArgs.length > 0 && !tool.allowRawArgs) {
+    errors.push(`\u5DE5\u5177 ${tool.id} \u4E0D\u5141\u8BB8 raw args`);
+  }
+  for (const key of Object.keys(input)) {
+    if (!known.has(key)) {
+      errors.push(`\u672A\u77E5\u53C2\u6570: ${key}`);
+    }
+  }
+  const params = {};
+  for (const spec of specs) {
+    const has = Object.prototype.hasOwnProperty.call(input, spec.name);
+    let value = has ? input[spec.name] : spec.default;
+    if (value === void 0 || value === null) {
+      if (spec.required) {
+        errors.push(`\u7F3A\u5C11\u5FC5\u586B\u53C2\u6570: ${spec.name}`);
+      }
+      continue;
+    }
+    const coerced = coerceParam(spec, value);
+    if (coerced.error) {
+      errors.push(coerced.error);
+      continue;
+    }
+    params[spec.name] = coerced.value;
+  }
+  return { params, errors };
+}
+function coerceParam(spec, value) {
+  switch (spec.type) {
+    case "string":
+      if (typeof value !== "string") {
+        return { error: `${spec.name} \u5E94\u4E3A string` };
+      }
+      return { value };
+    case "number":
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return { error: `${spec.name} \u5E94\u4E3A number` };
+      }
+      return { value };
+    case "boolean":
+      if (typeof value !== "boolean") {
+        return { error: `${spec.name} \u5E94\u4E3A boolean` };
+      }
+      return { value };
+    case "string[]":
+      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+        return { error: `${spec.name} \u5E94\u4E3A string[]` };
+      }
+      return { value };
+    case "enum": {
+      if (typeof value !== "string") {
+        return { error: `${spec.name} \u5E94\u4E3A\u679A\u4E3E\u5B57\u7B26\u4E32` };
+      }
+      if (spec.enum && !spec.enum.includes(value)) {
+        return { error: `${spec.name} \u5FC5\u987B\u662F ${spec.enum.join("|")}` };
+      }
+      return { value };
+    }
+    default:
+      return { error: `${spec.name} \u672A\u77E5\u7C7B\u578B` };
+  }
+}
+
+// shared/cli.ts
+var EXIT = { OK: 0, FAIL: 1, USAGE: 64, UNEXPECTED: 99, INTERRUPTED: 130 };
+var FALLBACK_TIMEOUT_MS = 24 * 60 * 6e4;
+var UsageError = class extends Error {
+};
+function usage(manifest2) {
+  const ids = manifest2.tools.map((t) => t.id).join(" | ");
+  return `\u7528\u6CD5\uFF1Anode dist/pack.mjs <${ids}> --project-root <\u76EE\u5F55> [--dry-run] [--result-json <\u6587\u4EF6>] [--<\u53C2\u6570> <\u503C> ...]`;
+}
+function kebabToCamel(name) {
+  return name.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+function parseArgv(manifest2, argv) {
+  const toolId = argv[0];
+  if (!toolId || toolId.startsWith("-")) {
+    throw new UsageError(`\u7F3A\u5C11\u5DE5\u5177\u540D\u3002${usage(manifest2)}`);
+  }
+  const tool = manifest2.tools.find((t) => t.id === toolId);
+  if (!tool) {
+    throw new UsageError(`${manifest2.id} \u6CA1\u6709\u5DE5\u5177 ${toolId}\u3002${usage(manifest2)}`);
+  }
+  const specs = new Map((tool.params ?? []).map((s) => [s.name, s]));
+  const params = {};
+  let projectRoot;
+  let resultJson;
+  let dryRun = false;
+  for (let i = 1; i < argv.length; i++) {
+    const token = argv[i];
+    if (!token.startsWith("--")) {
+      throw new UsageError(`\u591A\u4F59\u7684\u4F4D\u7F6E\u53C2\u6570\uFF1A${token}`);
+    }
+    const eq = token.indexOf("=");
+    const name = token.slice(2, eq >= 0 ? eq : void 0);
+    const inline = eq >= 0 ? token.slice(eq + 1) : void 0;
+    const takeValue = () => {
+      if (inline !== void 0) return inline;
+      const next = argv[i + 1];
+      if (next === void 0 || next.startsWith("--")) {
+        throw new UsageError(`--${name} \u9700\u8981\u4E00\u4E2A\u503C`);
+      }
+      i += 1;
+      return next;
+    };
+    const parseBool = () => {
+      if (inline === void 0 || inline === "true") return true;
+      if (inline === "false") return false;
+      throw new UsageError(`--${name} \u53EA\u80FD\u662F --${name} \u6216 --${name}=false`);
+    };
+    if (name === "project-root") {
+      projectRoot = takeValue();
+      continue;
+    }
+    if (name === "result-json") {
+      resultJson = takeValue();
+      continue;
+    }
+    if (name === "dry-run") {
+      dryRun = parseBool();
+      continue;
+    }
+    const key = kebabToCamel(name);
+    const spec = specs.get(key);
+    if (!spec) {
+      throw new UsageError(`${tool.id} \u6CA1\u6709\u53C2\u6570 --${name}`);
+    }
+    switch (spec.type) {
+      case "boolean":
+        params[key] = parseBool();
+        break;
+      case "number": {
+        const raw = takeValue();
+        const value = Number(raw);
+        if (raw.trim() === "" || Number.isNaN(value)) {
+          throw new UsageError(`--${name} \u5E94\u4E3A\u6570\u5B57\uFF1A${raw}`);
+        }
+        params[key] = value;
+        break;
+      }
+      case "string[]": {
+        const list = params[key] ?? [];
+        list.push(takeValue());
+        params[key] = list;
+        break;
+      }
+      default:
+        params[key] = takeValue();
+    }
+  }
+  if (!projectRoot) {
+    throw new UsageError(`\u7F3A\u5C11 --project-root\u3002${usage(manifest2)}`);
+  }
+  const { errors } = validateToolParams(tool, params);
+  if (errors.length > 0) {
+    throw new UsageError(errors.join("; "));
+  }
+  return { tool, projectRoot: path.resolve(projectRoot), dryRun, resultJson, params };
+}
+function peekResultJson(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--result-json") return argv[i + 1];
+    if (argv[i].startsWith("--result-json=")) return argv[i].slice("--result-json=".length);
+  }
+  return void 0;
+}
+function writeResult(file, value) {
+  if (!file) return;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(value)}
+`, "utf8");
+  } catch {
+  }
+}
+function isUnexpected(error) {
+  return error instanceof TypeError || error instanceof ReferenceError || error instanceof RangeError || error instanceof SyntaxError;
+}
+async function runCli(manifest2, run2, argv, io = {}) {
+  const out = io.out ?? ((line) => process.stdout.write(`${line}
+`));
+  const err = io.err ?? ((line) => process.stderr.write(`${line}
+`));
+  const signals = io.signals === void 0 ? process : io.signals;
+  const now = io.now ?? (() => /* @__PURE__ */ new Date());
+  let parsed;
+  try {
+    parsed = parseArgv(manifest2, argv);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeResult(peekResultJson(argv), { detail: message });
+    err(message);
+    return error instanceof UsageError ? EXIT.USAGE : EXIT.UNEXPECTED;
+  }
+  const controller = new AbortController();
+  const onSignal = () => controller.abort();
+  signals?.on("SIGTERM", onSignal);
+  signals?.on("SIGINT", onSignal);
+  const stamp = now().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+  const logFile = path.join(io.logDir ?? path.join(os.tmpdir(), "novoard-packs"), `${manifest2.id}-${parsed.tool.id}-${stamp}-${process.pid}.log`);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const ctx = {
+    cwd: parsed.projectRoot,
+    workspacePath: parsed.projectRoot,
+    timeoutMs: io.timeoutMs ?? FALLBACK_TIMEOUT_MS,
+    logFile,
+    abortSignal: controller.signal,
+    dryRun: parsed.dryRun,
+    resultJsonPath: parsed.resultJson,
+    localDate: localDate(timezone, now()),
+    onProgress: (message, percent) => {
+      const frame = { type: "progress", message };
+      if (typeof percent === "number" && Number.isFinite(percent)) frame.percent = Math.max(0, Math.min(100, percent));
+      out(JSON.stringify(frame));
+    }
+  };
+  try {
+    if (!parsed.dryRun) out(`\u65E5\u5FD7\uFF1A${logFile}`);
+    const result = await run2(parsed.tool.id, parsed.params, ctx);
+    if (controller.signal.aborted) {
+      writeResult(parsed.resultJson, { detail: "\u5DF2\u53D6\u6D88" });
+      err("\u5DF2\u53D6\u6D88");
+      return EXIT.INTERRUPTED;
+    }
+    if (result.code !== 0) {
+      const detail = result.detail || `${parsed.tool.displayName} \u9000\u51FA\u7801 ${result.code}`;
+      writeResult(parsed.resultJson, { detail });
+      err(detail);
+      return EXIT.FAIL;
+    }
+    writeResult(parsed.resultJson, { detail: result.detail, ...result.skipped ? { skipped: true } : {} });
+    out(result.detail);
+    return EXIT.OK;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      writeResult(parsed.resultJson, { detail: "\u5DF2\u53D6\u6D88" });
+      err("\u5DF2\u53D6\u6D88");
+      return EXIT.INTERRUPTED;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    writeResult(parsed.resultJson, { detail: message });
+    if (isUnexpected(error)) {
+      err(error instanceof Error && error.stack ? error.stack : message);
+      return EXIT.UNEXPECTED;
+    }
+    err(message);
+    return EXIT.FAIL;
+  } finally {
+    signals?.off("SIGTERM", onSignal);
+    signals?.off("SIGINT", onSignal);
+  }
+}
+function isCliEntry(moduleUrl) {
+  const script = process.argv[1];
+  if (!script) return false;
+  try {
+    return realpathSync(script) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+async function main(manifest2, run2) {
+  const code = await runCli(manifest2, run2, process.argv.slice(2));
+  process.stdout.write("", () => process.exit(code));
+}
+
 // shared/exec.ts
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
-import path from "node:path";
+import { createWriteStream, mkdirSync as mkdirSync2 } from "node:fs";
+import path2 from "node:path";
 var STRIP_ENV = /* @__PURE__ */ new Set(["VSCODE_NLS_CONFIG", "VSCODE_PID", "VSCODE_CWD", "VSCODE_NLS_CONFIG_JSON"]);
 function buildChildEnv(base = process.env) {
   const env = { ...base };
@@ -100,7 +393,7 @@ function spawnCaptured(options) {
   });
 }
 function runCommand(options) {
-  mkdirSync(path.dirname(options.logFile), { recursive: true });
+  mkdirSync2(path2.dirname(options.logFile), { recursive: true });
   const log = createWriteStream(options.logFile, { flags: "a" });
   log.write(`$ ${options.command} ${options.args.join(" ")}
 cwd=${options.cwd}
@@ -171,9 +464,20 @@ cwd=${options.cwd}
         { windowsHide: true, stdio: "ignore" }
       );
     }
+    let pendingLine = "";
+    const emitLines = (text, flush) => {
+      if (!options.onStdoutLine) return;
+      const parts = (pendingLine + text).split(/\r?\n/);
+      pendingLine = flush ? "" : parts.pop() ?? "";
+      for (const line of parts) {
+        if (line) options.onStdoutLine(line);
+      }
+    };
     proc.stdout?.on("data", (chunk) => {
-      stdout = cap(stdout + chunk.toString("utf8"));
+      const text = chunk.toString("utf8");
+      stdout = cap(stdout + text);
       log.write(chunk);
+      emitLines(text, false);
     });
     proc.stderr?.on("data", (chunk) => {
       stderr = cap(stderr + chunk.toString("utf8"));
@@ -186,7 +490,10 @@ cwd=${options.cwd}
       log.write(message);
       finish(1, null);
     });
-    proc.on("close", (code, signal) => finish(code, signal));
+    proc.on("close", (code, signal) => {
+      emitLines("", true);
+      finish(code, signal);
+    });
     timer = setTimeout(() => {
       timedOut = true;
       cancelled = true;
@@ -213,78 +520,9 @@ function cap(text, max = 2e5) {
   return text.slice(text.length - max);
 }
 
-// shared/validate.ts
-function validateToolParams(tool, raw, rawArgs) {
-  const errors = [];
-  const input = { ...raw ?? {} };
-  const specs = tool.params ?? [];
-  const known = new Set(specs.map((s) => s.name));
-  if (rawArgs && rawArgs.length > 0 && !tool.allowRawArgs) {
-    errors.push(`\u5DE5\u5177 ${tool.id} \u4E0D\u5141\u8BB8 raw args`);
-  }
-  for (const key of Object.keys(input)) {
-    if (!known.has(key)) {
-      errors.push(`\u672A\u77E5\u53C2\u6570: ${key}`);
-    }
-  }
-  const params = {};
-  for (const spec of specs) {
-    const has = Object.prototype.hasOwnProperty.call(input, spec.name);
-    let value = has ? input[spec.name] : spec.default;
-    if (value === void 0 || value === null) {
-      if (spec.required) {
-        errors.push(`\u7F3A\u5C11\u5FC5\u586B\u53C2\u6570: ${spec.name}`);
-      }
-      continue;
-    }
-    const coerced = coerceParam(spec, value);
-    if (coerced.error) {
-      errors.push(coerced.error);
-      continue;
-    }
-    params[spec.name] = coerced.value;
-  }
-  return { params, errors };
-}
-function coerceParam(spec, value) {
-  switch (spec.type) {
-    case "string":
-      if (typeof value !== "string") {
-        return { error: `${spec.name} \u5E94\u4E3A string` };
-      }
-      return { value };
-    case "number":
-      if (typeof value !== "number" || Number.isNaN(value)) {
-        return { error: `${spec.name} \u5E94\u4E3A number` };
-      }
-      return { value };
-    case "boolean":
-      if (typeof value !== "boolean") {
-        return { error: `${spec.name} \u5E94\u4E3A boolean` };
-      }
-      return { value };
-    case "string[]":
-      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-        return { error: `${spec.name} \u5E94\u4E3A string[]` };
-      }
-      return { value };
-    case "enum": {
-      if (typeof value !== "string") {
-        return { error: `${spec.name} \u5E94\u4E3A\u679A\u4E3E\u5B57\u7B26\u4E32` };
-      }
-      if (spec.enum && !spec.enum.includes(value)) {
-        return { error: `${spec.name} \u5FC5\u987B\u662F ${spec.enum.join("|")}` };
-      }
-      return { value };
-    }
-    default:
-      return { error: `${spec.name} \u672A\u77E5\u7C7B\u578B` };
-  }
-}
-
 // packs/versionControl/src/git.ts
 import { existsSync } from "node:fs";
-import path2 from "node:path";
+import path3 from "node:path";
 var GIT_TOOLS = [
   {
     id: "git-status",
@@ -568,7 +806,7 @@ function assertGitRepo(cwd) {
   if (!existsSync(cwd)) {
     throw new Error(`\u76EE\u5F55\u4E0D\u5B58\u5728: ${cwd}`);
   }
-  if (!existsSync(path2.join(cwd, ".git"))) {
+  if (!existsSync(path3.join(cwd, ".git"))) {
     throw new Error("\u4E0D\u662F Git \u4ED3\u5E93\uFF08\u7F3A\u5C11 .git\uFF09");
   }
 }
@@ -682,14 +920,14 @@ var manifest = {
 };
 
 // packs/versionControl/src/svn.ts
-import { appendFileSync, cpSync, existsSync as existsSync4, mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import path5 from "node:path";
+import { appendFileSync, cpSync, existsSync as existsSync4, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import path6 from "node:path";
 
 // shared/occupants.ts
-import { closeSync, existsSync as existsSync2, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path3 from "node:path";
-import { fileURLToPath } from "node:url";
+import { closeSync, existsSync as existsSync2, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import os2 from "node:os";
+import path4 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 var PROTECTED_NAMES = /* @__PURE__ */ new Set([
   "explorer",
   "dwm",
@@ -730,8 +968,8 @@ var ALWAYS_RELEASE = /* @__PURE__ */ new Set([
 ]);
 var NEVER_FORCE_KILL = ["rider", "idea", "clion", "webstorm", "pycharm", "goland", "devenv"];
 function helperScript() {
-  const here = path3.dirname(fileURLToPath(import.meta.url));
-  const found = path3.resolve(here, "../scripts/list-occupants.ps1");
+  const here = path4.dirname(fileURLToPath2(import.meta.url));
+  const found = path4.resolve(here, "../scripts/list-occupants.ps1");
   if (!existsSync2(found)) {
     throw new Error(`\u627E\u4E0D\u5230 ${found}`);
   }
@@ -769,9 +1007,9 @@ function writeFileList(extraFiles) {
   if (files.length === 0) {
     return void 0;
   }
-  const dir = mkdtempSync(path3.join(os.tmpdir(), "novoard-packs-occ-"));
-  const listFile = path3.join(dir, "files.txt");
-  writeFileSync(listFile, `\uFEFF${files.join("\r\n")}\r
+  const dir = mkdtempSync(path4.join(os2.tmpdir(), "novoard-packs-occ-"));
+  const listFile = path4.join(dir, "files.txt");
+  writeFileSync2(listFile, `\uFEFF${files.join("\r\n")}\r
 `, "utf8");
   return {
     listFile,
@@ -797,16 +1035,16 @@ function parseOccupantJson(stdout) {
   }
 }
 function isAlwaysRelease(item) {
-  const base = path3.parse(item.name).name.toLowerCase();
+  const base = path4.parse(item.name).name.toLowerCase();
   const full = item.name.toLowerCase();
   return [...ALWAYS_RELEASE].some((name) => base.includes(name) || full.includes(name));
 }
 function isNeverForceKill(item) {
-  const base = path3.parse(item.name).name.toLowerCase();
+  const base = path4.parse(item.name).name.toLowerCase();
   return NEVER_FORCE_KILL.some((name) => base.includes(name));
 }
 function isUnityEditorFamily(item) {
-  const base = path3.parse(item.name).name.toLowerCase();
+  const base = path4.parse(item.name).name.toLowerCase();
   const full = item.name.toLowerCase();
   return ["unity", "unitycrashhandler", "unityshadercompiler", "unity.licensing.client"].some(
     (name) => base.includes(name) || full.includes(name)
@@ -819,7 +1057,7 @@ function filterReleasable(occupants) {
     if (self.has(item.pid)) {
       continue;
     }
-    const base = path3.parse(item.name).name.toLowerCase();
+    const base = path4.parse(item.name).name.toLowerCase();
     if (PROTECTED_NAMES.has(base) && !isAlwaysRelease(item)) {
       continue;
     }
@@ -873,8 +1111,8 @@ async function scanReleasable(target, abortSignal, extraFiles, includeUnityByNam
 }
 function unityLockFiles(workspaceRoot) {
   return [
-    path3.join(workspaceRoot, "Temp", "UnityLockfile"),
-    path3.join(workspaceRoot, "Project", "Temp", "UnityLockfile")
+    path4.join(workspaceRoot, "Temp", "UnityLockfile"),
+    path4.join(workspaceRoot, "Project", "Temp", "UnityLockfile")
   ].filter((file) => existsSync2(file));
 }
 async function taskkill(pid, force, abortSignal) {
@@ -1002,7 +1240,7 @@ async function clearStaleUnityLocks(workspaceRoot, waitMsMax, abortSignal) {
 
 // packs/versionControl/src/svn-status.ts
 import { existsSync as existsSync3 } from "node:fs";
-import path4 from "node:path";
+import path5 from "node:path";
 var LOCAL_WRITE_ITEMS = /* @__PURE__ */ new Set([
   "modified",
   "added",
@@ -1070,7 +1308,7 @@ function decodeXml(value) {
   return value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 function relativeFromStatusPath(entryPath) {
-  return entryPath.replace(/\//g, path4.sep);
+  return entryPath.replace(/\//g, path5.sep);
 }
 function revertWriteRelatives(entries) {
   const found = /* @__PURE__ */ new Set();
@@ -1107,29 +1345,29 @@ function prioritizeLockTargets(rels) {
   return [...lockProne, ...rest].slice(0, MAX_LOCK_PROBE_FILES);
 }
 function isLockProne(rel) {
-  return LOCK_PRONE_EXT.has(path4.extname(rel).toLowerCase());
+  return LOCK_PRONE_EXT.has(path5.extname(rel).toLowerCase());
 }
 function svnMetadataPaths(workingCopy) {
   return [
-    path4.join(workingCopy, ".svn", "wc.db"),
-    path4.join(workingCopy, ".svn", "lock"),
-    path4.join(workingCopy, "Temp", "UnityLockfile"),
-    path4.join(workingCopy, "Project", "Temp", "UnityLockfile")
+    path5.join(workingCopy, ".svn", "wc.db"),
+    path5.join(workingCopy, ".svn", "lock"),
+    path5.join(workingCopy, "Temp", "UnityLockfile"),
+    path5.join(workingCopy, "Project", "Temp", "UnityLockfile")
   ];
 }
 function resolveWriteTargets(workingCopy, relatives) {
   const abs = /* @__PURE__ */ new Set();
   for (const rel of prioritizeLockTargets(relatives)) {
-    const file = path4.resolve(workingCopy, rel);
+    const file = path5.resolve(workingCopy, rel);
     abs.add(file);
     if (!existsSync3(file)) {
-      abs.add(path4.dirname(file));
+      abs.add(path5.dirname(file));
     }
   }
   for (const extra of svnMetadataPaths(workingCopy)) {
     abs.add(extra);
   }
-  abs.add(path4.resolve(workingCopy));
+  abs.add(path5.resolve(workingCopy));
   return [...abs];
 }
 function isSvnLockError(text) {
@@ -1149,6 +1387,40 @@ function conflictedRelativesFromUpdateOutput(stdout) {
   }
   return [...new Set(found)];
 }
+function isSvnUpdateItemLine(line) {
+  const match = /^([ADUCGER ]{4}) (\S.*)$/.exec(line);
+  return match !== null && match[1].trim() !== "";
+}
+function createUpdateProgress(options) {
+  const intervalMs = options.intervalMs ?? 1e3;
+  const now = options.now ?? Date.now;
+  let count = 0;
+  let lastAt = -Infinity;
+  const describe = () => {
+    if (options.total > 0) {
+      return {
+        message: `\u66F4\u65B0\u6587\u4EF6 ${count}/${options.total}`,
+        percent: Math.min(99, Math.floor(count / options.total * 100))
+      };
+    }
+    return { message: `\u66F4\u65B0\u6587\u4EF6 ${count}`, percent: null };
+  };
+  return {
+    line: (line) => {
+      if (!isSvnUpdateItemLine(line)) return;
+      count += 1;
+      const at = now();
+      if (at - lastAt < intervalMs) return;
+      lastAt = at;
+      const { message, percent } = describe();
+      options.emit(message, percent);
+    },
+    finish: () => {
+      options.emit(`\u66F4\u65B0\u5B8C\u6210\uFF0C\u5171 ${count} \u4E2A\u6761\u76EE`, 100);
+    },
+    count: () => count
+  };
+}
 function pathsFromSvnError(text) {
   const found = /* @__PURE__ */ new Set();
   const quoted = /'((?:[A-Za-z]:)?[^']*[\\/][^']+)'|"((?:[A-Za-z]:)?[^"]*[\\/][^"]+)"/g;
@@ -1167,13 +1439,14 @@ async function svnCheckAndUpdate(options) {
   if (!existsSync4(options.workingCopy)) {
     throw new Error(`\u76EE\u5F55\u4E0D\u5B58\u5728: ${options.workingCopy}`);
   }
-  if (!existsSync4(path5.join(options.workingCopy, ".svn"))) {
+  if (!existsSync4(path6.join(options.workingCopy, ".svn"))) {
     throw new Error("\u4E0D\u662F SVN \u5DE5\u4F5C\u526F\u672C\uFF08\u7F3A\u5C11 .svn\uFF09");
   }
+  const stage = (message) => options.onProgress?.(message, null);
   const policy = options.onConflict ?? "fail";
   const notes = [];
   const canRelease = options.releaseOccupants === true && process.platform === "win32";
-  if (existsSync4(path5.join(options.workingCopy, ".svn", "lock"))) {
+  if (existsSync4(path6.join(options.workingCopy, ".svn", "lock"))) {
     if (policy !== "revert") {
       throw new Error("\u5DE5\u4F5C\u526F\u672C\u6709 in-progress \u9501\uFF08.svn/lock\uFF09\uFF0C\u672A\u6267\u884C cleanup");
     }
@@ -1183,10 +1456,12 @@ async function svnCheckAndUpdate(options) {
     await runSvn(options, ["cleanup"], "svn cleanup");
     notes.push("\u5DF2 svn cleanup \u89E3\u9664 in-progress \u9501");
   }
+  stage("\u68C0\u67E5\u5DE5\u4F5C\u526F\u672C\u72B6\u6001");
   const status = await runSvn(options, ["status", "--xml"], "svn status");
   let statusXml = status.stdout;
   let incomingXml;
   if (!options.skipUpdate) {
+    stage("\u67E5\u8BE2\u8FDC\u7AEF\u53D8\u66F4");
     const remote = await runSvn(options, ["status", "-u", "--xml"], "svn status -u", true);
     if (remote.code === 0 && remote.stdout.trim()) {
       incomingXml = remote.stdout;
@@ -1236,13 +1511,20 @@ async function svnCheckAndUpdate(options) {
   if (options.skipUpdate) {
     return { skipped: true, detail: notes.join("\uFF1B") || "\u6309\u7B56\u7565\u8DF3\u8FC7 svn update", code: 0 };
   }
+  stage(incomingXml ? `\u5F00\u59CB\u66F4\u65B0\uFF0C\u8FDC\u7AEF\u53D8\u66F4\u7EA6 ${predicted.incoming} \u4E2A\u8DEF\u5F84` : "\u5F00\u59CB\u66F4\u65B0");
+  const counter = createUpdateProgress({
+    total: incomingXml ? predicted.incoming : 0,
+    emit: (message, percent) => options.onProgress?.(message, percent)
+  });
   const update = await runSvn(
     options,
     ["update", "--non-interactive", "--accept", "postpone"],
     "svn update",
-    true
+    true,
+    counter.line
   );
   if (update.code === 0) {
+    counter.finish();
     const conflicts = conflictedRelativesFromUpdateOutput(update.stdout);
     if (conflicts.length > 0 && policy === "postpone") {
       return {
@@ -1264,7 +1546,7 @@ async function svnCheckAndUpdate(options) {
   if (canRelease && lockHit) {
     const extra = pathsFromSvnError(`${update.stdout}
 ${update.stderr}`).map(
-      (item) => path5.isAbsolute(item) ? path5.relative(options.workingCopy, item) : item
+      (item) => path6.isAbsolute(item) ? path6.relative(options.workingCopy, item) : item
     );
     notes.push("\u66F4\u65B0\u88AB\u6587\u4EF6\u72EC\u5360\u6253\u65AD\uFF0Ccleanup \u5E76\u91CA\u653E\u5360\u7528\u540E\u91CD\u8BD5");
     await runSvn(options, ["cleanup"], "svn cleanup", true);
@@ -1355,18 +1637,19 @@ async function releasePredicted(options, rels, label) {
   return `\u5DF2\u7ED3\u675F\u5360\u7528\u8FDB\u7A0B ${closed}`;
 }
 function appendLog(logFile, line) {
-  mkdirSync2(path5.dirname(logFile), { recursive: true });
+  mkdirSync3(path6.dirname(logFile), { recursive: true });
   appendFileSync(logFile, `${line}
 `, "utf8");
 }
-async function runSvn(options, args, label, allowFail = false) {
+async function runSvn(options, args, label, allowFail = false, onStdoutLine) {
   const result = await runCommand({
     command: "svn",
     args,
     cwd: options.workingCopy,
     timeoutMs: args.includes("status") ? Math.min(options.timeoutMs, 10 * 6e4) : options.timeoutMs,
     logFile: options.logFile,
-    abortSignal: options.abortSignal
+    abortSignal: options.abortSignal,
+    onStdoutLine
   }).done;
   if (result.cancelled) {
     throw new Error(result.timedOut ? `${label} \u8D85\u65F6` : "\u5DF2\u53D6\u6D88");
@@ -1388,29 +1671,29 @@ async function backupDirty(options, statusXml) {
   const rels = revertWriteRelatives(parseSvnStatusXml(statusXml)).filter((rel) => !shouldSkipBackup(rel));
   const root = resolveBackupRoot(options.workingCopy, options.backupDir);
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const destRoot = path5.join(root, options.localDate ?? stamp.slice(0, 10), stamp);
-  mkdirSync2(destRoot, { recursive: true });
+  const destRoot = path6.join(root, options.localDate ?? stamp.slice(0, 10), stamp);
+  mkdirSync3(destRoot, { recursive: true });
   const copied = [];
   for (const rel of rels) {
-    const from = path5.join(options.workingCopy, rel);
+    const from = path6.join(options.workingCopy, rel);
     if (!existsSync4(from)) {
       continue;
     }
-    const to = path5.join(destRoot, rel);
-    mkdirSync2(path5.dirname(to), { recursive: true });
+    const to = path6.join(destRoot, rel);
+    mkdirSync3(path6.dirname(to), { recursive: true });
     cpSync(from, to, {
       recursive: true,
       force: true,
-      filter: (src) => !shouldSkipBackup(path5.relative(options.workingCopy, src))
+      filter: (src) => !shouldSkipBackup(path6.relative(options.workingCopy, src))
     });
     copied.push(rel);
   }
-  writeFileSync2(path5.join(destRoot, "manifest.txt"), copied.join("\n") || "(\u6CA1\u6709\u53EF\u5907\u4EFD\u7684\u810F\u6587\u4EF6)", "utf8");
+  writeFileSync3(path6.join(destRoot, "manifest.txt"), copied.join("\n") || "(\u6CA1\u6709\u53EF\u5907\u4EFD\u7684\u810F\u6587\u4EF6)", "utf8");
   return destRoot;
 }
 function resolveBackupRoot(workingCopy, backupDir) {
   if (backupDir) {
-    return path5.isAbsolute(backupDir) ? backupDir : path5.resolve(workingCopy, backupDir);
+    return path6.isAbsolute(backupDir) ? backupDir : path6.resolve(workingCopy, backupDir);
   }
   return `${workingCopy.replace(/[\\/]+$/, "")}_backup`;
 }
@@ -1509,7 +1792,8 @@ async function runSvnUpdate(params, ctx) {
     backupOnRevert: params.backupOnRevert !== false,
     backupDir: typeof params.backupDir === "string" ? params.backupDir : void 0,
     localDate: ctx.localDate,
-    releaseOccupants: params.releaseOccupants !== false
+    releaseOccupants: params.releaseOccupants !== false,
+    onProgress: ctx.onProgress
   });
   return { detail: result.detail, code: result.code, skipped: result.skipped };
 }
@@ -1532,6 +1816,9 @@ async function runSvnArgs(ctx, args, label, allowUrlCwd = false) {
 }
 function tail3(text) {
   return text.trim().split(/\r?\n/).filter(Boolean).slice(-8).join("\n");
+}
+if (isCliEntry(import.meta.url)) {
+  await main(manifest, run);
 }
 export {
   manifest,

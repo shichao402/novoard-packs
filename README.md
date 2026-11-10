@@ -23,7 +23,14 @@ scripts/build.mjs      打包、生成 toolset.json、复制 ps1
 
 - 每个包的 manifest 写在 `packs/<id>/src/manifest.ts`，`toolset.json`、`dist/`、`scripts/` 都由 `npm run build` 生成并提交，不要手改。
 - `npm run check` 依次跑 tsc、vitest、build，再要求 git 无变化；CI 跑的就是它。
-- 包入口 `src/index.ts` 目前导出 `manifest` 与 `run(toolId, params, ctx)`，argv CLI 在 P4 加。
+- 包入口 `src/index.ts` 导出 `manifest` 与 `run(toolId, params, ctx)`，直接执行时走 `shared/cli.ts` 的 argv CLI：
+
+```
+node packs/<id>/dist/pack.mjs <tool> --project-root <p> [--dry-run] [--result-json f] [--param-kebab v]
+```
+
+- 退出码：0 成功；1 工具执行失败；64 参数错误（未知参数、缺值、类型或枚举不合法）；99 意外错误；130 收到 SIGTERM 或 SIGINT 后取消。参数错误时如果给了 `--result-json`，同样写入结果文件。
+- result json 字段为 `detail`，以及可选的 `skipped`。进度以单行 JSON `{"type":"progress","message","percent"?}` 写到 stdout。每次运行的日志写到 `<tmp>/novoard-packs/`，非 dry-run 时 stdout 会打印路径。
 
 Hub 来源清单配置两条，git 都指向本仓：
 
@@ -37,8 +44,8 @@ Hub 来源清单配置两条，git 都指向本仓：
 | P1 | 仓骨架：TypeScript，esbuild 把每个包打成单文件 `dist/pack.mjs` 并提交；CI 检查 dist 与源码一致 | `npm run build` 后 git 无变化 |
 | P2 | versionControl：移植 cronkit `src/core/svn.ts`、`svn-status.ts`、`git.ts`；manifest 从 cronkit `toolset/builtin.ts` 对应条目转写 | 移植 cronkit `tests/svn-status.test.ts` 并通过；Windows 上对真实工作副本跑 svn-update，结果与 cronkit 一致 |
 | P3 | general：移植 `unity.ts`、`idle-quit.ts`；release-occupants 作为独立工具；shared 移植 `occupants.ts`、`exec.ts`、`paths.ts` | 移植 `tests/occupants.test.ts`、`idle-quit.test.ts`、`warmup-observe.test.ts`、`exec.test.ts` 并通过 |
-| P4 | 统一 CLI：`node dist/pack.mjs <tool> --project-root <p> [--dry-run] [--result-json f] [--param v]`，退出码与结果文件按 ADR-0019 | 用 novoard-agent 夹具测试脚本对每个工具跑一次 |
-| P5 | 进度：svn-update 输出阶段与文件计数，unity-warmup 输出导入百分比 | agent 控制台能看到步骤内部进度 |
+| P4 | 已完成。统一 CLI：`node dist/pack.mjs <tool> --project-root <p> [--dry-run] [--result-json f] [--param v]`，退出码与结果文件按 ADR-0019 | 用 novoard-agent 夹具测试脚本对每个工具跑一次 |
+| P5 | 已完成。进度：svn-update 输出阶段与文件计数，unity-warmup 输出导入百分比 | agent 控制台能看到步骤内部进度 |
 
 ## 迁移规则
 

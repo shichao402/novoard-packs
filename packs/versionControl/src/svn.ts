@@ -4,6 +4,7 @@ import { runCommand } from "../../../shared/exec";
 import { prepareExclusiveAccess } from "../../../shared/occupants";
 import {
   conflictedRelativesFromUpdateOutput,
+  createUpdateProgress,
   isSvnLockError,
   parseSvnStatusXml,
   pathsFromSvnError,
@@ -26,6 +27,8 @@ export async function svnCheckAndUpdate(options: {
   backupDir?: string;
   localDate?: string;
   releaseOccupants?: boolean;
+  /** 阶段与文件计数进度（P5）；percent 未知时为 null。 */
+  onProgress?: (message: string, percent?: number | null) => void;
 }): Promise<{ skipped: boolean; detail: string; code: number | null }> {
   if (!existsSync(options.workingCopy)) {
     throw new Error(`目录不存在: ${options.workingCopy}`);
@@ -34,6 +37,7 @@ export async function svnCheckAndUpdate(options: {
     throw new Error("不是 SVN 工作副本（缺少 .svn）");
   }
 
+  const stage = (message: string): void => options.onProgress?.(message, null);
   const policy = options.onConflict ?? "fail";
   const notes: string[] = [];
   const canRelease = options.releaseOccupants === true && process.platform === "win32";
@@ -49,10 +53,12 @@ export async function svnCheckAndUpdate(options: {
     notes.push("已 svn cleanup 解除 in-progress 锁");
   }
 
+  stage("检查工作副本状态");
   const status = await runSvn(options, ["status", "--xml"], "svn status");
   let statusXml = status.stdout;
   let incomingXml: string | undefined;
   if (!options.skipUpdate) {
+    stage("查询远端变更");
     const remote = await runSvn(options, ["status", "-u", "--xml"], "svn status -u", true);
     if (remote.code === 0 && remote.stdout.trim()) {
       incomingXml = remote.stdout;
@@ -106,13 +112,20 @@ export async function svnCheckAndUpdate(options: {
     return { skipped: true, detail: notes.join("；") || "按策略跳过 svn update", code: 0 };
   }
 
+  stage(incomingXml ? `开始更新，远端变更约 ${predicted.incoming} 个路径` : "开始更新");
+  const counter = createUpdateProgress({
+    total: incomingXml ? predicted.incoming : 0,
+    emit: (message, percent) => options.onProgress?.(message, percent),
+  });
   const update = await runSvn(
     options,
     ["update", "--non-interactive", "--accept", "postpone"],
     "svn update",
     true,
+    counter.line,
   );
   if (update.code === 0) {
+    counter.finish();
     const conflicts = conflictedRelativesFromUpdateOutput(update.stdout);
     if (conflicts.length > 0 && policy === "postpone") {
       return {
@@ -265,6 +278,7 @@ async function runSvn(
   args: string[],
   label: string,
   allowFail = false,
+  onStdoutLine?: (line: string) => void,
 ) {
   const result = await runCommand({
     command: "svn",
@@ -273,6 +287,7 @@ async function runSvn(
     timeoutMs: args.includes("status") ? Math.min(options.timeoutMs, 10 * 60_000) : options.timeoutMs,
     logFile: options.logFile,
     abortSignal: options.abortSignal,
+    onStdoutLine,
   }).done;
   if (result.cancelled) {
     throw new Error(result.timedOut ? `${label} 超时` : "已取消");

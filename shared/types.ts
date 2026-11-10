@@ -52,9 +52,11 @@ export type ToolRunContext = {
   resultJsonPath?: string;
   localDate?: string;
   workspacePath: string;
-  /** 长任务运行中的实时进度（如 Unity 导入日志心跳）。 */
-  onProgress?: (line: string) => void;
+  /** 长任务运行中的实时进度（如 Unity 导入日志心跳、svn update 文件计数）；percent 0–100，未知时省略。 */
+  onProgress?: ProgressFn;
 };
+
+export type ProgressFn = (message: string, percent?: number | null) => void;
 
 export type ToolRunResult = {
   detail: string;

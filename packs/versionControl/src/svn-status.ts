@@ -189,6 +189,55 @@ export function conflictedRelativesFromUpdateOutput(stdout: string): string[] {
   return [...new Set(found)];
 }
 
+/**
+ * svn update 输出里的单个条目行：前 4 列是状态位（A/D/U/C/G/E/R 或空格，且不全为空格），
+ * 第 5 列空格，后面是路径。"Updating '.':"、"Updated to revision"、"At revision" 都不算。
+ */
+export function isSvnUpdateItemLine(line: string): boolean {
+  const match = /^([ADUCGER ]{4}) (\S.*)$/.exec(line);
+  return match !== null && match[1].trim() !== "";
+}
+
+/**
+ * svn update 进度计数：每识别一个条目行加 1，最多每 intervalMs 推一次进度；
+ * total 是 status -u 预估的远端变更数，>0 时给出百分比（封顶 99，完成由 finish 报 100）。
+ */
+export function createUpdateProgress(options: {
+  total: number;
+  emit: (message: string, percent?: number | null) => void;
+  intervalMs?: number;
+  now?: () => number;
+}): { line: (line: string) => void; finish: () => void; count: () => number } {
+  const intervalMs = options.intervalMs ?? 1000;
+  const now = options.now ?? Date.now;
+  let count = 0;
+  let lastAt = -Infinity;
+  const describe = (): { message: string; percent: number | null } => {
+    if (options.total > 0) {
+      return {
+        message: `更新文件 ${count}/${options.total}`,
+        percent: Math.min(99, Math.floor((count / options.total) * 100)),
+      };
+    }
+    return { message: `更新文件 ${count}`, percent: null };
+  };
+  return {
+    line: (line) => {
+      if (!isSvnUpdateItemLine(line)) return;
+      count += 1;
+      const at = now();
+      if (at - lastAt < intervalMs) return;
+      lastAt = at;
+      const { message, percent } = describe();
+      options.emit(message, percent);
+    },
+    finish: () => {
+      options.emit(`更新完成，共 ${count} 个条目`, 100);
+    },
+    count: () => count,
+  };
+}
+
 export function pathsFromSvnError(text: string): string[] {
   const found = new Set<string>();
   const quoted = /'((?:[A-Za-z]:)?[^']*[\\/][^']+)'|"((?:[A-Za-z]:)?[^"]*[\\/][^"]+)"/g;
