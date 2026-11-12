@@ -1004,9 +1004,9 @@ var unityWarmup = {
   supportsDryRun: true,
   platforms: ["win32", "darwin"],
   params: [
-    { name: "nographics", type: "boolean", default: false },
-    { name: "executeMethod", type: "string" },
-    { name: "path", type: "string" }
+    { name: "nographics", type: "boolean", default: false, label: "\u65E0\u56FE\u5F62\u6A21\u5F0F", description: "\u4EE5 -nographics \u542F\u52A8 Unity" },
+    { name: "executeMethod", type: "string", label: "\u6267\u884C\u65B9\u6CD5", description: "\u5BFC\u5165\u5B8C\u6210\u540E\u8C03\u7528\u7684\u9759\u6001\u65B9\u6CD5\uFF0C\u5982 Build.Warmup\uFF1B\u7559\u7A7A\u53EA\u5BFC\u5165" },
+    { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
   ]
 };
 var quitIdle = {
@@ -1016,15 +1016,15 @@ var quitIdle = {
   supportsDryRun: true,
   platforms: ["win32"],
   params: [
-    { name: "processNames", type: "string[]", required: true },
-    { name: "idleFor", type: "string", required: true },
-    { name: "countIdleFrom", type: "string", default: "00:00" },
-    { name: "until", type: "string", default: "08:00" },
-    { name: "retryInterval", type: "string" },
-    { name: "closeWait", type: "string", default: "3m" },
+    { name: "processNames", type: "string[]", required: true, label: "\u8FDB\u7A0B\u540D", description: "\u5982 Unity.exe" },
+    { name: "idleFor", type: "string", required: true, label: "\u7A7A\u95F2\u591A\u4E45\u540E\u9000\u51FA", format: "duration" },
+    { name: "countIdleFrom", type: "string", default: "00:00", label: "\u4ECE\u51E0\u70B9\u5F00\u59CB\u8BA1\u7A7A\u95F2", format: "time" },
+    { name: "until", type: "string", default: "08:00", label: "\u6700\u665A\u7B49\u5230", format: "time" },
+    { name: "retryInterval", type: "string", label: "\u68C0\u67E5\u95F4\u9694", format: "duration", description: "\u8FD8\u6CA1\u7A7A\u95F2\u65F6\u9694\u591A\u4E45\u518D\u770B\u4E00\u6B21\uFF1B\u7559\u7A7A\u53EA\u770B\u4E00\u6B21" },
+    { name: "closeWait", type: "string", default: "3m", label: "\u6B63\u5E38\u5173\u95ED\u7B49\u5F85", format: "duration" },
     // cronkit 由步骤 timeout 决定（无 retryInterval 时即正常关闭的等待上限）；agent 只有整次运行的上限，
     // 所以单列成参数。缺省时用 CLI 兜底上限。
-    { name: "timeout", type: "string" }
+    { name: "timeout", type: "string", label: "\u7B49\u5F85\u4E0A\u9650", format: "duration" }
   ]
 };
 var releaseOccupants2 = {
@@ -1035,8 +1035,8 @@ var releaseOccupants2 = {
   supportsDryRun: true,
   platforms: ["win32"],
   params: [
-    { name: "path", type: "string", required: true, description: "\u8981\u91CA\u653E\u5360\u7528\u7684\u76EE\u5F55\uFF08\u76F8\u5BF9\u5DE5\u4F5C\u76EE\u5F55\u6216\u7EDD\u5BF9\u8DEF\u5F84\uFF09" },
-    { name: "extraFiles", type: "string[]", description: "\u76EE\u5F55\u4E4B\u5916\u8FD8\u8981\u68C0\u67E5\u7684\u6587\u4EF6" }
+    { name: "path", type: "string", required: true, label: "\u76EE\u5F55", format: "path", description: "\u8981\u91CA\u653E\u5360\u7528\u7684\u76EE\u5F55\uFF08\u76F8\u5BF9\u5DE5\u4F5C\u76EE\u5F55\u6216\u7EDD\u5BF9\u8DEF\u5F84\uFF09" },
+    { name: "extraFiles", type: "string[]", label: "\u989D\u5916\u6587\u4EF6", format: "path", description: "\u76EE\u5F55\u4E4B\u5916\u8FD8\u8981\u68C0\u67E5\u7684\u6587\u4EF6" }
   ]
 };
 var manifest = {

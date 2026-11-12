@@ -9,6 +9,8 @@ export type ParamType = "string" | "number" | "boolean" | "string[]" | "enum";
 
 export type Platform = "win32" | "darwin" | "linux";
 
+export type ParamFormat = "path" | "duration" | "time";
+
 export type ToolParamSpec = {
   name: string;
   type: ParamType;
@@ -16,6 +18,10 @@ export type ToolParamSpec = {
   default?: unknown;
   enum?: string[];
   description?: string;
+  /** 表单上显示的名字，缺省用 name。 */
+  label?: string;
+  /** 表单控件提示：path 带目录选择（相对工程根），duration 如 10m，time 如 08:00。 */
+  format?: ParamFormat;
 };
 
 export type ToolManifest = {

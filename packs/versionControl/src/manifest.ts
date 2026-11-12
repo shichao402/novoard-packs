@@ -18,23 +18,26 @@ const svnUpdate: ToolManifest = {
       enum: ["follow-latest", "manual", "disabled"],
       default: "follow-latest",
       required: true,
+      label: "更新策略",
     },
     {
       name: "onConflict",
       type: "enum",
       enum: ["fail", "postpone", "revert"],
       default: "fail",
+      label: "遇到冲突",
       description: "fail: 冲突即失败；postpone: 保留现场挂起本轮，下轮自动继续；revert: 备份后还原",
     },
-    { name: "backupOnRevert", type: "boolean", default: true },
-    { name: "backupDir", type: "string" },
+    { name: "backupOnRevert", type: "boolean", default: true, label: "还原前备份" },
+    { name: "backupDir", type: "string", label: "备份目录", format: "path" },
     {
       name: "releaseOccupants",
       type: "boolean",
       default: true,
+      label: "释放占用",
       description: "按本次将写入的文件释放占用；独占失败会 cleanup 后重试一次。不想强杀就关掉",
     },
-    { name: "path", type: "string" },
+    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -44,8 +47,8 @@ const svnCleanup: ToolManifest = {
   idempotent: true,
   requiresExclusiveWorkspace: true,
   params: [
-    { name: "removeUnversioned", type: "boolean", default: false },
-    { name: "path", type: "string" },
+    { name: "removeUnversioned", type: "boolean", default: false, label: "删除未纳管文件" },
+    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -56,14 +59,15 @@ const svnRevert: ToolManifest = {
   idempotent: true,
   requiresExclusiveWorkspace: true,
   params: [
-    { name: "recursive", type: "boolean", default: true },
+    { name: "recursive", type: "boolean", default: true, label: "递归" },
     {
       name: "releaseOccupants",
       type: "boolean",
       default: true,
+      label: "释放占用",
       description: "按本地脏文件释放占用。不想强杀就关掉",
     },
-    { name: "path", type: "string" },
+    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -74,8 +78,8 @@ const svnSwitch: ToolManifest = {
   requiresExclusiveWorkspace: true,
   remoteWrite: false,
   params: [
-    { name: "url", type: "string", required: true },
-    { name: "path", type: "string" },
+    { name: "url", type: "string", required: true, label: "目标 URL" },
+    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -85,9 +89,9 @@ const svnCopy: ToolManifest = {
   idempotent: false,
   remoteWrite: true,
   params: [
-    { name: "source", type: "string", required: true },
-    { name: "destination", type: "string", required: true },
-    { name: "message", type: "string", required: true },
+    { name: "source", type: "string", required: true, label: "源 URL" },
+    { name: "destination", type: "string", required: true, label: "目标 URL" },
+    { name: "message", type: "string", required: true, label: "提交说明" },
   ],
 };
 
@@ -97,8 +101,8 @@ const svnDelete: ToolManifest = {
   idempotent: false,
   remoteWrite: true,
   params: [
-    { name: "target", type: "string", required: true },
-    { name: "message", type: "string", required: true },
+    { name: "target", type: "string", required: true, label: "要删除的 URL" },
+    { name: "message", type: "string", required: true, label: "提交说明" },
   ],
 };
 

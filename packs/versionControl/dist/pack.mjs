@@ -530,7 +530,7 @@ var GIT_TOOLS = [
     description: "\u67E5\u770B\u5DE5\u4F5C\u533A\u4E0E\u5206\u652F\u72B6\u6001",
     idempotent: true,
     supportsDryRun: true,
-    params: [{ name: "path", type: "string", description: "\u76F8\u5BF9\u5DE5\u4F5C\u76EE\u5F55\u7684\u5B50\u8DEF\u5F84" }]
+    params: [{ name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u76F8\u5BF9\u5DE5\u4F5C\u76EE\u5F55\u7684\u5B50\u8DEF\u5F84" }]
   },
   {
     id: "git-fetch",
@@ -539,9 +539,9 @@ var GIT_TOOLS = [
     idempotent: true,
     supportsDryRun: true,
     params: [
-      { name: "remote", type: "string", description: "\u8FDC\u7AEF\u540D\uFF1B\u7559\u7A7A\u5219 --all" },
-      { name: "prune", type: "boolean", default: true, description: "\u5220\u9664\u8FDC\u7AEF\u5DF2\u4E0D\u5B58\u5728\u7684\u8DDF\u8E2A\u5206\u652F" },
-      { name: "path", type: "string" }
+      { name: "remote", type: "string", label: "\u8FDC\u7AEF", description: "\u8FDC\u7AEF\u540D\uFF1B\u7559\u7A7A\u5219 --all" },
+      { name: "prune", type: "boolean", default: true, label: "\u6E05\u7406\u5931\u6548\u5206\u652F", description: "\u5220\u9664\u8FDC\u7AEF\u5DF2\u4E0D\u5B58\u5728\u7684\u8DDF\u8E2A\u5206\u652F" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -558,13 +558,14 @@ var GIT_TOOLS = [
         enum: ["follow-latest", "manual", "disabled"],
         default: "follow-latest",
         required: true,
+        label: "\u66F4\u65B0\u7B56\u7565",
         description: "follow-latest \u6BCF\u6B21\u62C9\u53D6\uFF1Bmanual \u4EC5\u624B\u52A8\u89E6\u53D1\uFF1Bdisabled \u8DF3\u8FC7"
       },
-      { name: "remote", type: "string", description: "\u8FDC\u7AEF\u540D\uFF0C\u9ED8\u8BA4 origin\uFF08\u6307\u5B9A branch \u65F6\uFF09" },
-      { name: "branch", type: "string", description: "\u5206\u652F\u540D\uFF1B\u7559\u7A7A\u5219\u62C9\u5F53\u524D\u5206\u652F\u7684\u4E0A\u6E38" },
-      { name: "ffOnly", type: "boolean", default: true, description: "\u4EC5\u5FEB\u8FDB\uFF0C\u907F\u514D\u81EA\u52A8\u5408\u5E76\u63D0\u4EA4" },
-      { name: "rebase", type: "boolean", default: false },
-      { name: "path", type: "string" }
+      { name: "remote", type: "string", label: "\u8FDC\u7AEF", description: "\u8FDC\u7AEF\u540D\uFF0C\u9ED8\u8BA4 origin\uFF08\u6307\u5B9A branch \u65F6\uFF09" },
+      { name: "branch", type: "string", label: "\u5206\u652F", description: "\u5206\u652F\u540D\uFF1B\u7559\u7A7A\u5219\u62C9\u5F53\u524D\u5206\u652F\u7684\u4E0A\u6E38" },
+      { name: "ffOnly", type: "boolean", default: true, label: "\u4EC5\u5FEB\u8FDB", description: "\u4EC5\u5FEB\u8FDB\uFF0C\u907F\u514D\u81EA\u52A8\u5408\u5E76\u63D0\u4EA4" },
+      { name: "rebase", type: "boolean", default: false, label: "\u7528 rebase \u5408\u5E76" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -574,9 +575,9 @@ var GIT_TOOLS = [
     idempotent: false,
     requiresExclusiveWorkspace: true,
     params: [
-      { name: "ref", type: "string", required: true, description: "\u5206\u652F\u3001tag \u6216 commit" },
-      { name: "create", type: "boolean", default: false, description: "\u4E0D\u5B58\u5728\u5219\u65B0\u5EFA\u5206\u652F\uFF08-b\uFF09" },
-      { name: "path", type: "string" }
+      { name: "ref", type: "string", required: true, label: "\u5F15\u7528", description: "\u5206\u652F\u3001tag \u6216 commit" },
+      { name: "create", type: "boolean", default: false, label: "\u4E0D\u5B58\u5728\u5219\u65B0\u5EFA", description: "\u4E0D\u5B58\u5728\u5219\u65B0\u5EFA\u5206\u652F\uFF08-b\uFF09" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -591,11 +592,12 @@ var GIT_TOOLS = [
         type: "enum",
         enum: ["push", "pop", "drop", "list"],
         default: "push",
-        required: true
+        required: true,
+        label: "\u64CD\u4F5C"
       },
-      { name: "message", type: "string", description: "push \u65F6\u7684\u8BF4\u660E" },
-      { name: "includeUntracked", type: "boolean", default: false, description: "push \u65F6\u5305\u542B\u672A\u8DDF\u8E2A\u6587\u4EF6" },
-      { name: "path", type: "string" }
+      { name: "message", type: "string", label: "\u8BF4\u660E", description: "push \u65F6\u7684\u8BF4\u660E" },
+      { name: "includeUntracked", type: "boolean", default: false, label: "\u5305\u542B\u672A\u8DDF\u8E2A\u6587\u4EF6", description: "push \u65F6\u5305\u542B\u672A\u8DDF\u8E2A\u6587\u4EF6" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -605,9 +607,9 @@ var GIT_TOOLS = [
     idempotent: true,
     requiresExclusiveWorkspace: true,
     params: [
-      { name: "directories", type: "boolean", default: true, description: "\u540C\u65F6\u5220\u9664\u672A\u8DDF\u8E2A\u76EE\u5F55\uFF08-d\uFF09" },
-      { name: "ignored", type: "boolean", default: false, description: "\u540C\u65F6\u5220\u9664\u88AB ignore \u7684\u6587\u4EF6\uFF08-x\uFF09" },
-      { name: "path", type: "string" }
+      { name: "directories", type: "boolean", default: true, label: "\u5220\u9664\u672A\u8DDF\u8E2A\u76EE\u5F55", description: "\u540C\u65F6\u5220\u9664\u672A\u8DDF\u8E2A\u76EE\u5F55\uFF08-d\uFF09" },
+      { name: "ignored", type: "boolean", default: false, label: "\u5220\u9664\u88AB\u5FFD\u7565\u7684\u6587\u4EF6", description: "\u540C\u65F6\u5220\u9664\u88AB ignore \u7684\u6587\u4EF6\uFF08-x\uFF09" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -623,10 +625,11 @@ var GIT_TOOLS = [
         enum: ["mixed", "hard"],
         default: "mixed",
         required: true,
+        label: "\u6A21\u5F0F",
         description: "mixed \u4FDD\u7559\u5DE5\u4F5C\u533A\u6539\u52A8\uFF1Bhard \u4E22\u5F03\u672C\u5730\u6539\u52A8"
       },
-      { name: "ref", type: "string", default: "HEAD", description: "\u91CD\u7F6E\u5230\u7684\u5F15\u7528" },
-      { name: "path", type: "string" }
+      { name: "ref", type: "string", default: "HEAD", label: "\u5F15\u7528", description: "\u91CD\u7F6E\u5230\u7684\u5F15\u7528" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -636,10 +639,10 @@ var GIT_TOOLS = [
     idempotent: false,
     requiresExclusiveWorkspace: true,
     params: [
-      { name: "message", type: "string", required: true },
-      { name: "all", type: "boolean", default: true, description: "\u63D0\u4EA4\u524D git add -A" },
-      { name: "allowEmpty", type: "boolean", default: false },
-      { name: "path", type: "string" }
+      { name: "message", type: "string", required: true, label: "\u63D0\u4EA4\u8BF4\u660E" },
+      { name: "all", type: "boolean", default: true, label: "\u63D0\u4EA4\u5168\u90E8\u6539\u52A8", description: "\u63D0\u4EA4\u524D git add -A" },
+      { name: "allowEmpty", type: "boolean", default: false, label: "\u5141\u8BB8\u7A7A\u63D0\u4EA4" },
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   },
   {
@@ -650,16 +653,17 @@ var GIT_TOOLS = [
     remoteWrite: true,
     requiresExclusiveWorkspace: true,
     params: [
-      { name: "remote", type: "string", default: "origin" },
-      { name: "ref", type: "string", description: "\u8981\u63A8\u9001\u7684\u5F15\u7528\uFF1B\u7559\u7A7A\u5219\u63A8\u5F53\u524D\u5206\u652F" },
-      { name: "setUpstream", type: "boolean", default: false },
+      { name: "remote", type: "string", default: "origin", label: "\u8FDC\u7AEF" },
+      { name: "ref", type: "string", label: "\u5F15\u7528", description: "\u8981\u63A8\u9001\u7684\u5F15\u7528\uFF1B\u7559\u7A7A\u5219\u63A8\u5F53\u524D\u5206\u652F" },
+      { name: "setUpstream", type: "boolean", default: false, label: "\u8BBE\u7F6E\u4E0A\u6E38" },
       {
         name: "force",
         type: "boolean",
         default: false,
+        label: "\u5F3A\u5236\u63A8\u9001",
         description: "\u4F7F\u7528 --force-with-lease\uFF0C\u907F\u514D\u8986\u76D6\u672A\u77E5\u8FDC\u7AEF\u63D0\u4EA4"
       },
-      { name: "path", type: "string" }
+      { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
     ]
   }
 ];
@@ -831,24 +835,27 @@ var svnUpdate = {
       type: "enum",
       enum: ["follow-latest", "manual", "disabled"],
       default: "follow-latest",
-      required: true
+      required: true,
+      label: "\u66F4\u65B0\u7B56\u7565"
     },
     {
       name: "onConflict",
       type: "enum",
       enum: ["fail", "postpone", "revert"],
       default: "fail",
+      label: "\u9047\u5230\u51B2\u7A81",
       description: "fail: \u51B2\u7A81\u5373\u5931\u8D25\uFF1Bpostpone: \u4FDD\u7559\u73B0\u573A\u6302\u8D77\u672C\u8F6E\uFF0C\u4E0B\u8F6E\u81EA\u52A8\u7EE7\u7EED\uFF1Brevert: \u5907\u4EFD\u540E\u8FD8\u539F"
     },
-    { name: "backupOnRevert", type: "boolean", default: true },
-    { name: "backupDir", type: "string" },
+    { name: "backupOnRevert", type: "boolean", default: true, label: "\u8FD8\u539F\u524D\u5907\u4EFD" },
+    { name: "backupDir", type: "string", label: "\u5907\u4EFD\u76EE\u5F55", format: "path" },
     {
       name: "releaseOccupants",
       type: "boolean",
       default: true,
+      label: "\u91CA\u653E\u5360\u7528",
       description: "\u6309\u672C\u6B21\u5C06\u5199\u5165\u7684\u6587\u4EF6\u91CA\u653E\u5360\u7528\uFF1B\u72EC\u5360\u5931\u8D25\u4F1A cleanup \u540E\u91CD\u8BD5\u4E00\u6B21\u3002\u4E0D\u60F3\u5F3A\u6740\u5C31\u5173\u6389"
     },
-    { name: "path", type: "string" }
+    { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
   ]
 };
 var svnCleanup = {
@@ -857,8 +864,8 @@ var svnCleanup = {
   idempotent: true,
   requiresExclusiveWorkspace: true,
   params: [
-    { name: "removeUnversioned", type: "boolean", default: false },
-    { name: "path", type: "string" }
+    { name: "removeUnversioned", type: "boolean", default: false, label: "\u5220\u9664\u672A\u7EB3\u7BA1\u6587\u4EF6" },
+    { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
   ]
 };
 var svnRevert = {
@@ -868,14 +875,15 @@ var svnRevert = {
   idempotent: true,
   requiresExclusiveWorkspace: true,
   params: [
-    { name: "recursive", type: "boolean", default: true },
+    { name: "recursive", type: "boolean", default: true, label: "\u9012\u5F52" },
     {
       name: "releaseOccupants",
       type: "boolean",
       default: true,
+      label: "\u91CA\u653E\u5360\u7528",
       description: "\u6309\u672C\u5730\u810F\u6587\u4EF6\u91CA\u653E\u5360\u7528\u3002\u4E0D\u60F3\u5F3A\u6740\u5C31\u5173\u6389"
     },
-    { name: "path", type: "string" }
+    { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
   ]
 };
 var svnSwitch = {
@@ -885,8 +893,8 @@ var svnSwitch = {
   requiresExclusiveWorkspace: true,
   remoteWrite: false,
   params: [
-    { name: "url", type: "string", required: true },
-    { name: "path", type: "string" }
+    { name: "url", type: "string", required: true, label: "\u76EE\u6807 URL" },
+    { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
   ]
 };
 var svnCopy = {
@@ -895,9 +903,9 @@ var svnCopy = {
   idempotent: false,
   remoteWrite: true,
   params: [
-    { name: "source", type: "string", required: true },
-    { name: "destination", type: "string", required: true },
-    { name: "message", type: "string", required: true }
+    { name: "source", type: "string", required: true, label: "\u6E90 URL" },
+    { name: "destination", type: "string", required: true, label: "\u76EE\u6807 URL" },
+    { name: "message", type: "string", required: true, label: "\u63D0\u4EA4\u8BF4\u660E" }
   ]
 };
 var svnDelete = {
@@ -906,8 +914,8 @@ var svnDelete = {
   idempotent: false,
   remoteWrite: true,
   params: [
-    { name: "target", type: "string", required: true },
-    { name: "message", type: "string", required: true }
+    { name: "target", type: "string", required: true, label: "\u8981\u5220\u9664\u7684 URL" },
+    { name: "message", type: "string", required: true, label: "\u63D0\u4EA4\u8BF4\u660E" }
   ]
 };
 var manifest = {

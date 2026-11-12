@@ -22,7 +22,8 @@
             "disabled"
           ],
           "default": "follow-latest",
-          "required": true
+          "required": true,
+          "label": "更新策略"
         },
         {
           "name": "onConflict",
@@ -33,26 +34,33 @@
             "revert"
           ],
           "default": "fail",
+          "label": "遇到冲突",
           "description": "fail: 冲突即失败；postpone: 保留现场挂起本轮，下轮自动继续；revert: 备份后还原"
         },
         {
           "name": "backupOnRevert",
           "type": "boolean",
-          "default": true
+          "default": true,
+          "label": "还原前备份"
         },
         {
           "name": "backupDir",
-          "type": "string"
+          "type": "string",
+          "label": "备份目录",
+          "format": "path"
         },
         {
           "name": "releaseOccupants",
           "type": "boolean",
           "default": true,
+          "label": "释放占用",
           "description": "按本次将写入的文件释放占用；独占失败会 cleanup 后重试一次。不想强杀就关掉"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -65,11 +73,14 @@
         {
           "name": "removeUnversioned",
           "type": "boolean",
-          "default": false
+          "default": false,
+          "label": "删除未纳管文件"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -83,17 +94,21 @@
         {
           "name": "recursive",
           "type": "boolean",
-          "default": true
+          "default": true,
+          "label": "递归"
         },
         {
           "name": "releaseOccupants",
           "type": "boolean",
           "default": true,
+          "label": "释放占用",
           "description": "按本地脏文件释放占用。不想强杀就关掉"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -107,11 +122,14 @@
         {
           "name": "url",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "目标 URL"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -124,17 +142,20 @@
         {
           "name": "source",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "源 URL"
         },
         {
           "name": "destination",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "目标 URL"
         },
         {
           "name": "message",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "提交说明"
         }
       ]
     },
@@ -147,12 +168,14 @@
         {
           "name": "target",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "要删除的 URL"
         },
         {
           "name": "message",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "提交说明"
         }
       ]
     },
@@ -166,6 +189,7 @@
         {
           "name": "path",
           "type": "string",
+          "label": "子路径（暂不生效）",
           "description": "相对工作目录的子路径"
         }
       ]
@@ -180,17 +204,21 @@
         {
           "name": "remote",
           "type": "string",
+          "label": "远端",
           "description": "远端名；留空则 --all"
         },
         {
           "name": "prune",
           "type": "boolean",
           "default": true,
+          "label": "清理失效分支",
           "description": "删除远端已不存在的跟踪分支"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -212,32 +240,39 @@
           ],
           "default": "follow-latest",
           "required": true,
+          "label": "更新策略",
           "description": "follow-latest 每次拉取；manual 仅手动触发；disabled 跳过"
         },
         {
           "name": "remote",
           "type": "string",
+          "label": "远端",
           "description": "远端名，默认 origin（指定 branch 时）"
         },
         {
           "name": "branch",
           "type": "string",
+          "label": "分支",
           "description": "分支名；留空则拉当前分支的上游"
         },
         {
           "name": "ffOnly",
           "type": "boolean",
           "default": true,
+          "label": "仅快进",
           "description": "仅快进，避免自动合并提交"
         },
         {
           "name": "rebase",
           "type": "boolean",
-          "default": false
+          "default": false,
+          "label": "用 rebase 合并"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -252,17 +287,21 @@
           "name": "ref",
           "type": "string",
           "required": true,
+          "label": "引用",
           "description": "分支、tag 或 commit"
         },
         {
           "name": "create",
           "type": "boolean",
           "default": false,
+          "label": "不存在则新建",
           "description": "不存在则新建分支（-b）"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -283,22 +322,27 @@
             "list"
           ],
           "default": "push",
-          "required": true
+          "required": true,
+          "label": "操作"
         },
         {
           "name": "message",
           "type": "string",
+          "label": "说明",
           "description": "push 时的说明"
         },
         {
           "name": "includeUntracked",
           "type": "boolean",
           "default": false,
+          "label": "包含未跟踪文件",
           "description": "push 时包含未跟踪文件"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -313,17 +357,21 @@
           "name": "directories",
           "type": "boolean",
           "default": true,
+          "label": "删除未跟踪目录",
           "description": "同时删除未跟踪目录（-d）"
         },
         {
           "name": "ignored",
           "type": "boolean",
           "default": false,
+          "label": "删除被忽略的文件",
           "description": "同时删除被 ignore 的文件（-x）"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -343,17 +391,21 @@
           ],
           "default": "mixed",
           "required": true,
+          "label": "模式",
           "description": "mixed 保留工作区改动；hard 丢弃本地改动"
         },
         {
           "name": "ref",
           "type": "string",
           "default": "HEAD",
+          "label": "引用",
           "description": "重置到的引用"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -367,22 +419,27 @@
         {
           "name": "message",
           "type": "string",
-          "required": true
+          "required": true,
+          "label": "提交说明"
         },
         {
           "name": "all",
           "type": "boolean",
           "default": true,
+          "label": "提交全部改动",
           "description": "提交前 git add -A"
         },
         {
           "name": "allowEmpty",
           "type": "boolean",
-          "default": false
+          "default": false,
+          "label": "允许空提交"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -397,27 +454,33 @@
         {
           "name": "remote",
           "type": "string",
-          "default": "origin"
+          "default": "origin",
+          "label": "远端"
         },
         {
           "name": "ref",
           "type": "string",
+          "label": "引用",
           "description": "要推送的引用；留空则推当前分支"
         },
         {
           "name": "setUpstream",
           "type": "boolean",
-          "default": false
+          "default": false,
+          "label": "设置上游"
         },
         {
           "name": "force",
           "type": "boolean",
           "default": false,
+          "label": "强制推送",
           "description": "使用 --force-with-lease，避免覆盖未知远端提交"
         },
         {
           "name": "path",
-          "type": "string"
+          "type": "string",
+          "label": "子路径（暂不生效）",
+          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     }
