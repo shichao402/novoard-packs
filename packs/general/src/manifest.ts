@@ -13,7 +13,6 @@ const unityWarmup: ToolManifest = {
   params: [
     { name: "nographics", type: "boolean", default: false, label: "无图形模式", description: "以 -nographics 启动 Unity" },
     { name: "executeMethod", type: "string", label: "执行方法", description: "导入完成后调用的静态方法，如 Build.Warmup；留空只导入" },
-    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 

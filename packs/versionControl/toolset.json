@@ -55,12 +55,6 @@
           "default": true,
           "label": "释放占用",
           "description": "按本次将写入的文件释放占用；独占失败会 cleanup 后重试一次。不想强杀就关掉"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -75,12 +69,6 @@
           "type": "boolean",
           "default": false,
           "label": "删除未纳管文件"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -103,12 +91,6 @@
           "default": true,
           "label": "释放占用",
           "description": "按本地脏文件释放占用。不想强杀就关掉"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -124,12 +106,6 @@
           "type": "string",
           "required": true,
           "label": "目标 URL"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -185,14 +161,7 @@
       "description": "查看工作区与分支状态",
       "idempotent": true,
       "supportsDryRun": true,
-      "params": [
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "相对工作目录的子路径"
-        }
-      ]
+      "params": []
     },
     {
       "id": "git-fetch",
@@ -213,12 +182,6 @@
           "default": true,
           "label": "清理失效分支",
           "description": "删除远端已不存在的跟踪分支"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -267,12 +230,6 @@
           "type": "boolean",
           "default": false,
           "label": "用 rebase 合并"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -296,12 +253,6 @@
           "default": false,
           "label": "不存在则新建",
           "description": "不存在则新建分支（-b）"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -337,12 +288,6 @@
           "default": false,
           "label": "包含未跟踪文件",
           "description": "push 时包含未跟踪文件"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -366,12 +311,6 @@
           "default": false,
           "label": "删除被忽略的文件",
           "description": "同时删除被 ignore 的文件（-x）"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -400,12 +339,6 @@
           "default": "HEAD",
           "label": "引用",
           "description": "重置到的引用"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -434,12 +367,6 @@
           "type": "boolean",
           "default": false,
           "label": "允许空提交"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     },
@@ -475,12 +402,6 @@
           "default": false,
           "label": "强制推送",
           "description": "使用 --force-with-lease，避免覆盖未知远端提交"
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "label": "子路径（暂不生效）",
-          "description": "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」"
         }
       ]
     }

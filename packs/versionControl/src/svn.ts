@@ -268,6 +268,35 @@ function appendLog(logFile: string, line: string): void {
   appendFileSync(logFile, `${line}\n`, "utf8");
 }
 
+/** 会写工作副本（.svn/wc.db）的子命令；被中途结束会留下 in-progress 锁。 */
+const SVN_WC_WRITE = new Set(["update", "up", "revert", "commit", "ci", "switch", "merge", "checkout", "co", "add", "delete", "rm", "copy", "cp", "move", "mv", "resolve"]);
+/** 中断后 cleanup 的上限：agent 对 uses 步骤的宽限期是 10 秒（ADR-0019 §5），要在它强杀之前跑完。 */
+export const INTERRUPT_CLEANUP_MS = 6_000;
+/** svn 的软杀宽限：Windows 上不带 /F 的 taskkill 对 svn 无效，等久了只会挤掉 cleanup 的时间。 */
+export const SVN_GRACEFUL_MS = 1_000;
+
+/**
+ * svn 写工作副本的命令被取消或超时后，补跑一次 `svn cleanup` 解除 in-progress 锁。
+ * 不带 abortSignal（此时已经中止），失败只记日志，返回附加说明。
+ */
+export async function cleanupAfterInterrupt(
+  args: string[],
+  options: { cwd: string; logFile: string },
+): Promise<string> {
+  if (!SVN_WC_WRITE.has(args[0] ?? "")) return "";
+  const result = await runCommand({
+    command: "svn",
+    args: ["cleanup", "--non-interactive"],
+    cwd: options.cwd,
+    timeoutMs: INTERRUPT_CLEANUP_MS,
+    logFile: options.logFile,
+    gracefulMs: SVN_GRACEFUL_MS,
+  }).done;
+  const ok = !result.cancelled && result.code === 0;
+  appendLog(options.logFile, `[novoard-packs] 中断后 svn cleanup ${ok ? "完成" : `失败 code=${result.code} timedOut=${result.timedOut}`}`);
+  return ok ? "（已 svn cleanup）" : "（svn cleanup 未完成，下次运行前需手动 cleanup）";
+}
+
 async function runSvn(
   options: {
     workingCopy: string;
@@ -287,10 +316,12 @@ async function runSvn(
     timeoutMs: args.includes("status") ? Math.min(options.timeoutMs, 10 * 60_000) : options.timeoutMs,
     logFile: options.logFile,
     abortSignal: options.abortSignal,
+    gracefulMs: SVN_GRACEFUL_MS,
     onStdoutLine,
   }).done;
   if (result.cancelled) {
-    throw new Error(result.timedOut ? `${label} 超时` : "已取消");
+    const note = await cleanupAfterInterrupt(args, { cwd: options.workingCopy, logFile: options.logFile });
+    throw new Error(`${result.timedOut ? `${label} 超时` : "已取消"}${note}`);
   }
   if (!allowFail && result.code !== 0) {
     throw new Error(tail(result.stderr) || `${label} 退出码 ${result.code}`);

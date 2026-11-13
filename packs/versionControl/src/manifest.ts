@@ -37,7 +37,6 @@ const svnUpdate: ToolManifest = {
       label: "释放占用",
       description: "按本次将写入的文件释放占用；独占失败会 cleanup 后重试一次。不想强杀就关掉",
     },
-    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -48,7 +47,6 @@ const svnCleanup: ToolManifest = {
   requiresExclusiveWorkspace: true,
   params: [
     { name: "removeUnversioned", type: "boolean", default: false, label: "删除未纳管文件" },
-    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -67,7 +65,6 @@ const svnRevert: ToolManifest = {
       label: "释放占用",
       description: "按本地脏文件释放占用。不想强杀就关掉",
     },
-    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 
@@ -79,7 +76,6 @@ const svnSwitch: ToolManifest = {
   remoteWrite: false,
   params: [
     { name: "url", type: "string", required: true, label: "目标 URL" },
-    { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
   ],
 };
 

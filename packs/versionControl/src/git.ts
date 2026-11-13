@@ -10,7 +10,7 @@ export const GIT_TOOLS: ToolManifest[] = [
     description: "查看工作区与分支状态",
     idempotent: true,
     supportsDryRun: true,
-    params: [{ name: "path", type: "string", label: "子路径（暂不生效）", description: "相对工作目录的子路径" }],
+    params: [],
   },
   {
     id: "git-fetch",
@@ -21,7 +21,6 @@ export const GIT_TOOLS: ToolManifest[] = [
     params: [
       { name: "remote", type: "string", label: "远端", description: "远端名；留空则 --all" },
       { name: "prune", type: "boolean", default: true, label: "清理失效分支", description: "删除远端已不存在的跟踪分支" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -45,7 +44,6 @@ export const GIT_TOOLS: ToolManifest[] = [
       { name: "branch", type: "string", label: "分支", description: "分支名；留空则拉当前分支的上游" },
       { name: "ffOnly", type: "boolean", default: true, label: "仅快进", description: "仅快进，避免自动合并提交" },
       { name: "rebase", type: "boolean", default: false, label: "用 rebase 合并" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -57,7 +55,6 @@ export const GIT_TOOLS: ToolManifest[] = [
     params: [
       { name: "ref", type: "string", required: true, label: "引用", description: "分支、tag 或 commit" },
       { name: "create", type: "boolean", default: false, label: "不存在则新建", description: "不存在则新建分支（-b）" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -77,7 +74,6 @@ export const GIT_TOOLS: ToolManifest[] = [
       },
       { name: "message", type: "string", label: "说明", description: "push 时的说明" },
       { name: "includeUntracked", type: "boolean", default: false, label: "包含未跟踪文件", description: "push 时包含未跟踪文件" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -89,7 +85,6 @@ export const GIT_TOOLS: ToolManifest[] = [
     params: [
       { name: "directories", type: "boolean", default: true, label: "删除未跟踪目录", description: "同时删除未跟踪目录（-d）" },
       { name: "ignored", type: "boolean", default: false, label: "删除被忽略的文件", description: "同时删除被 ignore 的文件（-x）" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -109,7 +104,6 @@ export const GIT_TOOLS: ToolManifest[] = [
         description: "mixed 保留工作区改动；hard 丢弃本地改动",
       },
       { name: "ref", type: "string", default: "HEAD", label: "引用", description: "重置到的引用" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -122,7 +116,6 @@ export const GIT_TOOLS: ToolManifest[] = [
       { name: "message", type: "string", required: true, label: "提交说明" },
       { name: "all", type: "boolean", default: true, label: "提交全部改动", description: "提交前 git add -A" },
       { name: "allowEmpty", type: "boolean", default: false, label: "允许空提交" },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
   {
@@ -143,7 +136,6 @@ export const GIT_TOOLS: ToolManifest[] = [
         label: "强制推送",
         description: "使用 --force-with-lease，避免覆盖未知远端提交",
       },
-      { name: "path", type: "string", label: "子路径（暂不生效）", description: "沿用自 cronkit，当前版本的工具不读取；要换目录请改步骤的「工程根」" },
     ],
   },
 ];

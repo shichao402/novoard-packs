@@ -238,6 +238,8 @@ async function runCli(manifest2, run2, argv, io = {}) {
   const onSignal = () => controller.abort();
   signals?.on("SIGTERM", onSignal);
   signals?.on("SIGINT", onSignal);
+  const stopStdin = io.stdin ? watchCancelLine(io.stdin, onSignal) : () => {
+  };
   const stamp = now().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
   const logFile = path.join(io.logDir ?? path.join(os.tmpdir(), "novoard-packs"), `${manifest2.id}-${parsed.tool.id}-${stamp}-${process.pid}.log`);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -290,7 +292,44 @@ async function runCli(manifest2, run2, argv, io = {}) {
   } finally {
     signals?.off("SIGTERM", onSignal);
     signals?.off("SIGINT", onSignal);
+    stopStdin();
   }
+}
+function isCancelLine(line) {
+  const text = line.trim();
+  if (!text.startsWith("{")) return false;
+  try {
+    const value = JSON.parse(text);
+    return value?.type === "cancel";
+  } catch {
+    return false;
+  }
+}
+function watchCancelLine(input, onCancel) {
+  let buf = "";
+  const onData = (chunk) => {
+    buf += String(chunk);
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (isCancelLine(line)) onCancel();
+    }
+    if (buf.length > 4096) buf = buf.slice(-4096);
+  };
+  const onEnd = () => {
+    if (isCancelLine(buf)) onCancel();
+    buf = "";
+  };
+  input.on("data", onData);
+  input.on("end", onEnd);
+  input.on("error", () => {
+  });
+  return () => {
+    input.off("data", onData);
+    input.off("end", onEnd);
+    input.pause();
+  };
 }
 function isCliEntry(moduleUrl) {
   const script = process.argv[1];
@@ -302,7 +341,7 @@ function isCliEntry(moduleUrl) {
   }
 }
 async function main(manifest2, run2) {
-  const code = await runCli(manifest2, run2, process.argv.slice(2));
+  const code = await runCli(manifest2, run2, process.argv.slice(2), { stdin: process.stdin.isTTY ? null : process.stdin });
   process.stdout.write("", () => process.exit(code));
 }
 
@@ -1005,8 +1044,7 @@ var unityWarmup = {
   platforms: ["win32", "darwin"],
   params: [
     { name: "nographics", type: "boolean", default: false, label: "\u65E0\u56FE\u5F62\u6A21\u5F0F", description: "\u4EE5 -nographics \u542F\u52A8 Unity" },
-    { name: "executeMethod", type: "string", label: "\u6267\u884C\u65B9\u6CD5", description: "\u5BFC\u5165\u5B8C\u6210\u540E\u8C03\u7528\u7684\u9759\u6001\u65B9\u6CD5\uFF0C\u5982 Build.Warmup\uFF1B\u7559\u7A7A\u53EA\u5BFC\u5165" },
-    { name: "path", type: "string", label: "\u5B50\u8DEF\u5F84\uFF08\u6682\u4E0D\u751F\u6548\uFF09", description: "\u6CBF\u7528\u81EA cronkit\uFF0C\u5F53\u524D\u7248\u672C\u7684\u5DE5\u5177\u4E0D\u8BFB\u53D6\uFF1B\u8981\u6362\u76EE\u5F55\u8BF7\u6539\u6B65\u9AA4\u7684\u300C\u5DE5\u7A0B\u6839\u300D" }
+    { name: "executeMethod", type: "string", label: "\u6267\u884C\u65B9\u6CD5", description: "\u5BFC\u5165\u5B8C\u6210\u540E\u8C03\u7528\u7684\u9759\u6001\u65B9\u6CD5\uFF0C\u5982 Build.Warmup\uFF1B\u7559\u7A7A\u53EA\u5BFC\u5165" }
   ]
 };
 var quitIdle = {

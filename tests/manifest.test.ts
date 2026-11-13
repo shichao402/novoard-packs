@@ -15,6 +15,13 @@ const NEW_TOOLS = new Set(["release-occupants"]);
 // cronkit 由步骤 timeout 承担、迁移后需单列的参数
 const NEW_PARAMS: Record<string, string[]> = { "quit-idle": ["timeout"] };
 
+// cronkit 用 `path` 在 target 工程根下取子目录；迁移后由步骤的 cwd 承担，工具不读，已删除。
+// release-occupants 的 path 是新工具自己的必填参数，不在此列（它也不在 cronkit 基准里）。
+const REMOVED_PARAMS = new Set(["path"]);
+const cronkitPorted: ToolManifest[] = cronkitTools.map((t) =>
+  t.params ? { ...t, params: t.params.filter((p) => !REMOVED_PARAMS.has(p.name)) } : t,
+);
+
 const baseline = new Map(cronkitTools.map((t) => [t.id, t]));
 
 /** 去掉迁移后新增的内容：platforms、单列参数，以及表单展示字段（label、format、cronkit 没有的参数说明）。 */
@@ -39,7 +46,14 @@ describe("manifest 与 cronkit builtin 一致", () => {
   });
 
   it("每个工具的字段与参数一致（platforms 为新增字段，不参与比较）", () => {
-    expect(ported.map(withoutPlatforms)).toEqual(cronkitTools);
+    expect(ported.map(withoutPlatforms)).toEqual(cronkitPorted);
+  });
+
+  it("只有 release-occupants 带 path 参数（其余工具的 path 已随 cronkit 子路径语义删除）", () => {
+    const withPath = [...versionControl.tools, ...general.tools]
+      .filter((t) => (t.params ?? []).some((p) => p.name === "path"))
+      .map((t) => t.id);
+    expect(withPath).toEqual(["release-occupants"]);
   });
 
   it("任何工具都不再有 confirmRemoteWrite，远端写工具保留 remoteWrite", () => {
@@ -81,12 +95,11 @@ describe("manifest 与 cronkit builtin 一致", () => {
     expect(tool?.params?.[1]?.required).toBeUndefined();
   });
 
-  it("表单字段：每个参数都有 label；format 只用 path/duration/time；无效的 path 参数不带目录选择", () => {
+  it("表单字段：每个参数都有 label；format 只用 path/duration/time", () => {
     for (const t of [...versionControl.tools, ...general.tools]) {
       for (const p of t.params ?? []) {
         expect(p.label, `${t.id}.${p.name}`).toBeTruthy();
         if (p.format) expect(["path", "duration", "time"]).toContain(p.format);
-        if (p.name === "path" && t.id !== "release-occupants") expect(p.format, `${t.id}.path`).toBeUndefined();
       }
     }
     const quit = general.tools.find((t) => t.id === "quit-idle");

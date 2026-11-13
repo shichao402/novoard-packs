@@ -4,7 +4,7 @@ import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
 import { isGitTool, runGitTool } from "./git";
 import { manifest } from "./manifest";
-import { svnCheckAndUpdate, svnRevertTree } from "./svn";
+import { cleanupAfterInterrupt, SVN_GRACEFUL_MS, svnCheckAndUpdate, svnRevertTree } from "./svn";
 
 export { manifest };
 
@@ -102,9 +102,12 @@ async function runSvnArgs(
     timeoutMs: ctx.timeoutMs,
     logFile: ctx.logFile,
     abortSignal: ctx.abortSignal,
+    gracefulMs: SVN_GRACEFUL_MS,
   }).done;
   if (result.cancelled) {
-    throw new Error(result.timedOut ? `${label} 超时` : "已取消");
+    // URL 对 URL 的 copy/delete 不碰工作副本，不用 cleanup
+    const note = allowUrlCwd ? "" : await cleanupAfterInterrupt(args, { cwd: ctx.cwd, logFile: ctx.logFile });
+    throw new Error(`${result.timedOut ? `${label} 超时` : "已取消"}${note}`);
   }
   if (result.code !== 0) {
     throw new Error(tail(result.stderr || result.stdout) || `${label} 退出码 ${result.code}`);

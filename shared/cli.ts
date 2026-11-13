@@ -8,10 +8,12 @@
  * - 退出码：0 成功；1 工具失败；64 参数错；99 意外错误（程序缺陷）；130 被中断。
  * - `--result-json`：`{ detail, skipped? }`，失败时 detail 为失败原因。
  * - 进度：stdout 输出 `{"type":"progress","message":...,"percent"?:N}` 行。
- * - SIGTERM/SIGINT：中止信号传给工具，由工具结束自己启动的子进程树，然后写结果文件并以 130 退出。
+ * - 取消：SIGTERM/SIGINT，或 stdin 读到一行 `{"type":"cancel"}`（ADR-0019 §5；Windows 上 agent 只能走 stdin），
+ *   中止信号传给工具，由工具结束自己启动的子进程树，然后写结果文件并以 130 退出。
  * - 超时由 agent 的 runner 统一负责，这里只给工具一个兜底上限（24 小时）。
  */
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import type { Readable } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -163,6 +165,8 @@ export type CliIo = {
   err?: (line: string) => void;
   /** 订阅中断信号的对象，默认 process；测试传 EventEmitter。 */
   signals?: { on: (event: string, fn: () => void) => unknown; off: (event: string, fn: () => void) => unknown } | null;
+  /** 读取取消指令的输入流；默认不读（测试与被 import 时），`main` 传 process.stdin。 */
+  stdin?: Readable | null;
   logDir?: string;
   timeoutMs?: number;
   now?: () => Date;
@@ -188,6 +192,7 @@ export async function runCli(manifest: ToolsetManifest, run: RunFn, argv: string
   const onSignal = (): void => controller.abort();
   signals?.on("SIGTERM", onSignal);
   signals?.on("SIGINT", onSignal);
+  const stopStdin = io.stdin ? watchCancelLine(io.stdin, onSignal) : () => {};
 
   const stamp = now().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
   const logFile = path.join(io.logDir ?? path.join(os.tmpdir(), "novoard-packs"), `${manifest.id}-${parsed.tool.id}-${stamp}-${process.pid}.log`);
@@ -242,7 +247,47 @@ export async function runCli(manifest: ToolsetManifest, run: RunFn, argv: string
   } finally {
     signals?.off("SIGTERM", onSignal);
     signals?.off("SIGINT", onSignal);
+    stopStdin();
   }
+}
+
+/** 是否为取消指令行：`{"type":"cancel"}`，前后空白与 \r 忽略。 */
+export function isCancelLine(line: string): boolean {
+  const text = line.trim();
+  if (!text.startsWith("{")) return false;
+  try {
+    const value = JSON.parse(text) as { type?: unknown };
+    return value?.type === "cancel";
+  } catch {
+    return false;
+  }
+}
+
+/** 逐行读 stdin，读到取消指令就回调；返回停止函数（移除监听并让出 stdin，不拖住退出）。 */
+export function watchCancelLine(input: Readable, onCancel: () => void): () => void {
+  let buf = "";
+  const onData = (chunk: Buffer | string): void => {
+    buf += String(chunk);
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (isCancelLine(line)) onCancel();
+    }
+    if (buf.length > 4096) buf = buf.slice(-4096);
+  };
+  const onEnd = (): void => {
+    if (isCancelLine(buf)) onCancel();
+    buf = "";
+  };
+  input.on("data", onData);
+  input.on("end", onEnd);
+  input.on("error", () => {});
+  return () => {
+    input.off("data", onData);
+    input.off("end", onEnd);
+    input.pause();
+  };
 }
 
 /** 当前模块是否作为 `node dist/pack.mjs` 直接运行（被 import 时为 false）。 */
@@ -258,6 +303,6 @@ export function isCliEntry(moduleUrl: string): boolean {
 
 /** 包入口调用：跑完 CLI 后等 stdout 刷完再退出，避免残留句柄让进程挂住。 */
 export async function main(manifest: ToolsetManifest, run: RunFn): Promise<void> {
-  const code = await runCli(manifest, run, process.argv.slice(2));
+  const code = await runCli(manifest, run, process.argv.slice(2), { stdin: process.stdin.isTTY ? null : process.stdin });
   process.stdout.write("", () => process.exit(code));
 }
