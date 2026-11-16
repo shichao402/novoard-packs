@@ -161,6 +161,17 @@ describe.skipIf(!hasSvn)("workingCopyPool 集成（svnadmin + file://）", () =>
     sh("svn", ["revert", path.join(slot("s01"), "Assets", "a.txt")]);
   }, 60_000);
 
+  it("pattern 带后缀：listFrom 列出的分支根也能进候选", async () => {
+    const root = path.join(base, "pool-suffix");
+    mkdirSync(root);
+    writeFileSync(
+      path.join(root, "pool.toml"),
+      [`maxSlots = 1`, `svnRoot = "${url}"`, "", "[branches]", `pattern = "branches/{name}/Assets"`, `listFrom = ["branches"]`, ""].join("\n"),
+    );
+    const cand = await run("candidates", {}, { ...ctx(), cwd: root, workspacePath: root });
+    expect(cand.choices?.map((c) => c.value).sort()).toEqual(["b1", "b2", "b3"]);
+  }, 30_000);
+
   it("release 只清租约不动文件；带改动切换后 patch 能恢复", async () => {
     const edited = path.join(slot("s01"), "Assets", "a.txt");
     writeFileSync(edited, "a\nmy change\n");

@@ -3667,11 +3667,12 @@ async function listRemoteBranches(pool) {
   if (cache && pool.now().getTime() - Date.parse(cache.at) < LIST_CACHE_MS) return { entries: cache.entries, cached: true };
   const ctx = readOnlyCtx(pool, LIST_TIMEOUT_MS);
   const entries = [];
+  const suffix = pool.config.branches.pattern.split("{name}")[1] ?? "";
   try {
     for (const dir of dirs) {
       const result = await svn(ctx, ["ls", "--xml", `${pool.config.svnRoot}/${dir}`]);
       for (const item of parseListXml(result.stdout)) {
-        const branch = branchFromPath(pool.config, `${dir}/${item.name}`);
+        const branch = branchFromPath(pool.config, `${dir}/${item.name}${suffix}`);
         if (branch) entries.push({ branch, date: item.date });
       }
     }

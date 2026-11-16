@@ -87,11 +87,13 @@ export async function listRemoteBranches(pool: Pool): Promise<{ entries: RemoteB
 
   const ctx = readOnlyCtx(pool, LIST_TIMEOUT_MS);
   const entries: RemoteBranch[] = [];
+  // listFrom 列出的是分支根；pattern 带后缀（如 branches/{name}/GameCore）时补上后缀再反推分支名
+  const suffix = pool.config.branches.pattern.split("{name}")[1] ?? "";
   try {
     for (const dir of dirs) {
       const result = await svn(ctx, ["ls", "--xml", `${pool.config.svnRoot}/${dir}`]);
       for (const item of parseListXml(result.stdout)) {
-        const branch = branchFromPath(pool.config, `${dir}/${item.name}`);
+        const branch = branchFromPath(pool.config, `${dir}/${item.name}${suffix}`);
         if (branch) entries.push({ branch, date: item.date });
       }
     }
