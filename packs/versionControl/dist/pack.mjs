@@ -191,6 +191,13 @@ function peekResultJson(argv) {
   }
   return void 0;
 }
+function extras(result) {
+  const out = {};
+  if (result.choices !== void 0) out.choices = result.choices;
+  if (result.summary !== void 0) out.summary = result.summary;
+  if (result.pool !== void 0) out.pool = result.pool;
+  return out;
+}
 function writeResult(file, value) {
   if (!file) return;
   try {
@@ -253,11 +260,11 @@ async function runCli(manifest2, run2, argv, io = {}) {
     }
     if (result.code !== 0) {
       const detail = result.detail || `${parsed.tool.displayName} \u9000\u51FA\u7801 ${result.code}`;
-      writeResult(parsed.resultJson, { detail });
+      writeResult(parsed.resultJson, { detail, ...extras(result) });
       err(detail);
       return EXIT.FAIL;
     }
-    writeResult(parsed.resultJson, { detail: result.detail, ...result.skipped ? { skipped: true } : {} });
+    writeResult(parsed.resultJson, { detail: result.detail, ...result.skipped ? { skipped: true } : {}, ...extras(result) });
     out(result.detail);
     return EXIT.OK;
   } catch (error) {
@@ -268,6 +275,10 @@ async function runCli(manifest2, run2, argv, io = {}) {
     }
     const message = error instanceof Error ? error.message : String(error);
     writeResult(parsed.resultJson, { detail: message });
+    if (error instanceof UsageError) {
+      err(message);
+      return EXIT.USAGE;
+    }
     if (isUnexpected(error)) {
       err(error instanceof Error && error.stack ? error.stack : message);
       return EXIT.UNEXPECTED;
@@ -954,9 +965,9 @@ var manifest = {
   tools: [svnUpdate, svnCleanup, svnRevert, svnSwitch, svnCopy, svnDelete, ...GIT_TOOLS]
 };
 
-// packs/versionControl/src/svn.ts
-import { appendFileSync, cpSync, existsSync as existsSync4, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import path6 from "node:path";
+// shared/svn-update.ts
+import { cpSync, existsSync as existsSync4, mkdirSync as mkdirSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import path7 from "node:path";
 
 // shared/occupants.ts
 import { closeSync, existsSync as existsSync2, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
@@ -1273,9 +1284,38 @@ async function clearStaleUnityLocks(workspaceRoot, waitMsMax, abortSignal) {
   }
 }
 
-// packs/versionControl/src/svn-status.ts
-import { existsSync as existsSync3 } from "node:fs";
+// shared/svn-run.ts
+import { appendFileSync, mkdirSync as mkdirSync3 } from "node:fs";
 import path5 from "node:path";
+var SVN_WC_WRITE = /* @__PURE__ */ new Set(["update", "up", "revert", "commit", "ci", "switch", "sw", "merge", "checkout", "co", "add", "delete", "rm", "copy", "cp", "move", "mv", "resolve"]);
+var INTERRUPT_CLEANUP_MS = 6e3;
+var SVN_GRACEFUL_MS = 1e3;
+function appendLog(logFile, line) {
+  try {
+    mkdirSync3(path5.dirname(logFile), { recursive: true });
+    appendFileSync(logFile, `${line}
+`, "utf8");
+  } catch {
+  }
+}
+async function cleanupAfterInterrupt(args, options) {
+  if (!SVN_WC_WRITE.has(args[0] ?? "")) return "";
+  const result = await runCommand({
+    command: "svn",
+    args: ["cleanup", "--non-interactive"],
+    cwd: options.cwd,
+    timeoutMs: INTERRUPT_CLEANUP_MS,
+    logFile: options.logFile,
+    gracefulMs: SVN_GRACEFUL_MS
+  }).done;
+  const ok = !result.cancelled && result.code === 0;
+  appendLog(options.logFile, `[novoard-packs] \u4E2D\u65AD\u540E svn cleanup ${ok ? "\u5B8C\u6210" : `\u5931\u8D25 code=${result.code} timedOut=${result.timedOut}`}`);
+  return ok ? "\uFF08\u5DF2 svn cleanup\uFF09" : "\uFF08svn cleanup \u672A\u5B8C\u6210\uFF0C\u4E0B\u6B21\u8FD0\u884C\u524D\u9700\u624B\u52A8 cleanup\uFF09";
+}
+
+// shared/svn-status.ts
+import { existsSync as existsSync3 } from "node:fs";
+import path6 from "node:path";
 var LOCAL_WRITE_ITEMS = /* @__PURE__ */ new Set([
   "modified",
   "added",
@@ -1343,7 +1383,7 @@ function decodeXml(value) {
   return value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 function relativeFromStatusPath(entryPath) {
-  return entryPath.replace(/\//g, path5.sep);
+  return entryPath.replace(/\//g, path6.sep);
 }
 function revertWriteRelatives(entries) {
   const found = /* @__PURE__ */ new Set();
@@ -1380,29 +1420,29 @@ function prioritizeLockTargets(rels) {
   return [...lockProne, ...rest].slice(0, MAX_LOCK_PROBE_FILES);
 }
 function isLockProne(rel) {
-  return LOCK_PRONE_EXT.has(path5.extname(rel).toLowerCase());
+  return LOCK_PRONE_EXT.has(path6.extname(rel).toLowerCase());
 }
 function svnMetadataPaths(workingCopy) {
   return [
-    path5.join(workingCopy, ".svn", "wc.db"),
-    path5.join(workingCopy, ".svn", "lock"),
-    path5.join(workingCopy, "Temp", "UnityLockfile"),
-    path5.join(workingCopy, "Project", "Temp", "UnityLockfile")
+    path6.join(workingCopy, ".svn", "wc.db"),
+    path6.join(workingCopy, ".svn", "lock"),
+    path6.join(workingCopy, "Temp", "UnityLockfile"),
+    path6.join(workingCopy, "Project", "Temp", "UnityLockfile")
   ];
 }
 function resolveWriteTargets(workingCopy, relatives) {
   const abs = /* @__PURE__ */ new Set();
   for (const rel of prioritizeLockTargets(relatives)) {
-    const file = path5.resolve(workingCopy, rel);
+    const file = path6.resolve(workingCopy, rel);
     abs.add(file);
     if (!existsSync3(file)) {
-      abs.add(path5.dirname(file));
+      abs.add(path6.dirname(file));
     }
   }
   for (const extra of svnMetadataPaths(workingCopy)) {
     abs.add(extra);
   }
-  abs.add(path5.resolve(workingCopy));
+  abs.add(path6.resolve(workingCopy));
   return [...abs];
 }
 function isSvnLockError(text) {
@@ -1469,19 +1509,19 @@ function pathsFromSvnError(text) {
   return [...found];
 }
 
-// packs/versionControl/src/svn.ts
+// shared/svn-update.ts
 async function svnCheckAndUpdate(options) {
   if (!existsSync4(options.workingCopy)) {
     throw new Error(`\u76EE\u5F55\u4E0D\u5B58\u5728: ${options.workingCopy}`);
   }
-  if (!existsSync4(path6.join(options.workingCopy, ".svn"))) {
+  if (!existsSync4(path7.join(options.workingCopy, ".svn"))) {
     throw new Error("\u4E0D\u662F SVN \u5DE5\u4F5C\u526F\u672C\uFF08\u7F3A\u5C11 .svn\uFF09");
   }
   const stage = (message) => options.onProgress?.(message, null);
   const policy = options.onConflict ?? "fail";
   const notes = [];
   const canRelease = options.releaseOccupants === true && process.platform === "win32";
-  if (existsSync4(path6.join(options.workingCopy, ".svn", "lock"))) {
+  if (existsSync4(path7.join(options.workingCopy, ".svn", "lock"))) {
     if (policy !== "revert") {
       throw new Error("\u5DE5\u4F5C\u526F\u672C\u6709 in-progress \u9501\uFF08.svn/lock\uFF09\uFF0C\u672A\u6267\u884C cleanup");
     }
@@ -1581,7 +1621,7 @@ async function svnCheckAndUpdate(options) {
   if (canRelease && lockHit) {
     const extra = pathsFromSvnError(`${update.stdout}
 ${update.stderr}`).map(
-      (item) => path6.isAbsolute(item) ? path6.relative(options.workingCopy, item) : item
+      (item) => path7.isAbsolute(item) ? path7.relative(options.workingCopy, item) : item
     );
     notes.push("\u66F4\u65B0\u88AB\u6587\u4EF6\u72EC\u5360\u6253\u65AD\uFF0Ccleanup \u5E76\u91CA\u653E\u5360\u7528\u540E\u91CD\u8BD5");
     await runSvn(options, ["cleanup"], "svn cleanup", true);
@@ -1671,28 +1711,6 @@ async function releasePredicted(options, rels, label) {
   }
   return `\u5DF2\u7ED3\u675F\u5360\u7528\u8FDB\u7A0B ${closed}`;
 }
-function appendLog(logFile, line) {
-  mkdirSync3(path6.dirname(logFile), { recursive: true });
-  appendFileSync(logFile, `${line}
-`, "utf8");
-}
-var SVN_WC_WRITE = /* @__PURE__ */ new Set(["update", "up", "revert", "commit", "ci", "switch", "merge", "checkout", "co", "add", "delete", "rm", "copy", "cp", "move", "mv", "resolve"]);
-var INTERRUPT_CLEANUP_MS = 6e3;
-var SVN_GRACEFUL_MS = 1e3;
-async function cleanupAfterInterrupt(args, options) {
-  if (!SVN_WC_WRITE.has(args[0] ?? "")) return "";
-  const result = await runCommand({
-    command: "svn",
-    args: ["cleanup", "--non-interactive"],
-    cwd: options.cwd,
-    timeoutMs: INTERRUPT_CLEANUP_MS,
-    logFile: options.logFile,
-    gracefulMs: SVN_GRACEFUL_MS
-  }).done;
-  const ok = !result.cancelled && result.code === 0;
-  appendLog(options.logFile, `[novoard-packs] \u4E2D\u65AD\u540E svn cleanup ${ok ? "\u5B8C\u6210" : `\u5931\u8D25 code=${result.code} timedOut=${result.timedOut}`}`);
-  return ok ? "\uFF08\u5DF2 svn cleanup\uFF09" : "\uFF08svn cleanup \u672A\u5B8C\u6210\uFF0C\u4E0B\u6B21\u8FD0\u884C\u524D\u9700\u624B\u52A8 cleanup\uFF09";
-}
 async function runSvn(options, args, label, allowFail = false, onStdoutLine) {
   const result = await runCommand({
     command: "svn",
@@ -1725,29 +1743,29 @@ async function backupDirty(options, statusXml) {
   const rels = revertWriteRelatives(parseSvnStatusXml(statusXml)).filter((rel) => !shouldSkipBackup(rel));
   const root = resolveBackupRoot(options.workingCopy, options.backupDir);
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const destRoot = path6.join(root, options.localDate ?? stamp.slice(0, 10), stamp);
-  mkdirSync3(destRoot, { recursive: true });
+  const destRoot = path7.join(root, options.localDate ?? stamp.slice(0, 10), stamp);
+  mkdirSync4(destRoot, { recursive: true });
   const copied = [];
   for (const rel of rels) {
-    const from = path6.join(options.workingCopy, rel);
+    const from = path7.join(options.workingCopy, rel);
     if (!existsSync4(from)) {
       continue;
     }
-    const to = path6.join(destRoot, rel);
-    mkdirSync3(path6.dirname(to), { recursive: true });
+    const to = path7.join(destRoot, rel);
+    mkdirSync4(path7.dirname(to), { recursive: true });
     cpSync(from, to, {
       recursive: true,
       force: true,
-      filter: (src) => !shouldSkipBackup(path6.relative(options.workingCopy, src))
+      filter: (src) => !shouldSkipBackup(path7.relative(options.workingCopy, src))
     });
     copied.push(rel);
   }
-  writeFileSync3(path6.join(destRoot, "manifest.txt"), copied.join("\n") || "(\u6CA1\u6709\u53EF\u5907\u4EFD\u7684\u810F\u6587\u4EF6)", "utf8");
+  writeFileSync3(path7.join(destRoot, "manifest.txt"), copied.join("\n") || "(\u6CA1\u6709\u53EF\u5907\u4EFD\u7684\u810F\u6587\u4EF6)", "utf8");
   return destRoot;
 }
 function resolveBackupRoot(workingCopy, backupDir) {
   if (backupDir) {
-    return path6.isAbsolute(backupDir) ? backupDir : path6.resolve(workingCopy, backupDir);
+    return path7.isAbsolute(backupDir) ? backupDir : path7.resolve(workingCopy, backupDir);
   }
   return `${workingCopy.replace(/[\\/]+$/, "")}_backup`;
 }

@@ -38,6 +38,8 @@ export type ToolManifest = {
   lowPriority?: boolean;
   /** 缺省视为全平台（ADR-0019）。 */
   platforms?: Platform[];
+  /** query：只读、快速返回候选项（ADR-0020），只能用于 inputs.choices.uses；缺省 action。 */
+  kind?: "query" | "action";
 };
 
 export type ToolsetManifest = {
@@ -64,8 +66,17 @@ export type ToolRunContext = {
 
 export type ProgressFn = (message: string, percent?: number | null) => void;
 
+/** 查询工具的候选项（ADR-0020 §3）。 */
+export type Choice = { value: string; label?: string; hint?: string };
+
 export type ToolRunResult = {
   detail: string;
   code: number | null;
   skipped?: boolean;
+  /** query 工具的候选项。 */
+  choices?: Choice[];
+  /** 一句话结果，供磁贴与会话展示。 */
+  summary?: string;
+  /** workingCopyPool 的结构化池状态（status、acquire）。 */
+  pool?: unknown;
 };

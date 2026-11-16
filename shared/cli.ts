@@ -5,8 +5,9 @@
  *
  * - argv 与 novoard-agent `paramsToArgv` 互逆：kebab 转 camelCase；布尔 `--flag` 为 true、`--flag=false` 为 false；
  *   数组每项重复一次 flag；number 按数字解析。解析后再走 validateToolParams。
- * - 退出码：0 成功；1 工具失败；64 参数错；99 意外错误（程序缺陷）；130 被中断。
- * - `--result-json`：`{ detail, skipped? }`，失败时 detail 为失败原因。
+ * - 退出码：0 成功；1 工具失败；64 参数错（含工具抛出的 UsageError）；99 意外错误（程序缺陷）；130 被中断。
+ * - `--result-json`：`{ detail, skipped?, choices?, summary?, pool? }`，失败时 detail 为失败原因；
+ *   工具返回的附加字段（ADR-0020 的 choices、workingCopyPool 的 summary/pool）有值才写，失败时也照写。
  * - 进度：stdout 输出 `{"type":"progress","message":...,"percent"?:N}` 行。
  * - 取消：SIGTERM/SIGINT，或 stdin 读到一行 `{"type":"cancel"}`（ADR-0019 §5；Windows 上 agent 只能走 stdin），
  *   中止信号传给工具，由工具结束自己启动的子进程树，然后写结果文件并以 130 退出。
@@ -146,7 +147,18 @@ function peekResultJson(argv: string[]): string | undefined {
   return undefined;
 }
 
-function writeResult(file: string | undefined, value: { detail: string; skipped?: boolean }): void {
+type ResultFile = { detail: string; skipped?: boolean; choices?: unknown; summary?: string; pool?: unknown };
+
+/** 只挑出工具给了值的附加字段。 */
+function extras(result: ToolRunResult): Omit<ResultFile, "detail" | "skipped"> {
+  const out: Omit<ResultFile, "detail" | "skipped"> = {};
+  if (result.choices !== undefined) out.choices = result.choices;
+  if (result.summary !== undefined) out.summary = result.summary;
+  if (result.pool !== undefined) out.pool = result.pool;
+  return out;
+}
+
+function writeResult(file: string | undefined, value: ResultFile): void {
   if (!file) return;
   try {
     mkdirSync(path.dirname(file), { recursive: true });
@@ -223,11 +235,11 @@ export async function runCli(manifest: ToolsetManifest, run: RunFn, argv: string
     }
     if (result.code !== 0) {
       const detail = result.detail || `${parsed.tool.displayName} 退出码 ${result.code}`;
-      writeResult(parsed.resultJson, { detail });
+      writeResult(parsed.resultJson, { detail, ...extras(result) });
       err(detail);
       return EXIT.FAIL;
     }
-    writeResult(parsed.resultJson, { detail: result.detail, ...(result.skipped ? { skipped: true } : {}) });
+    writeResult(parsed.resultJson, { detail: result.detail, ...(result.skipped ? { skipped: true } : {}), ...extras(result) });
     out(result.detail);
     return EXIT.OK;
   } catch (error) {
@@ -238,6 +250,11 @@ export async function runCli(manifest: ToolsetManifest, run: RunFn, argv: string
     }
     const message = error instanceof Error ? error.message : String(error);
     writeResult(parsed.resultJson, { detail: message });
+    if (error instanceof UsageError) {
+      // 工具运行中才发现的配置/参数错误（如 workingCopyPool 的 pool.toml 校验）
+      err(message);
+      return EXIT.USAGE;
+    }
     if (isUnexpected(error)) {
       err(error instanceof Error && error.stack ? error.stack : message);
       return EXIT.UNEXPECTED;

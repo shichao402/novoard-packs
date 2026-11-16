@@ -117,6 +117,27 @@
           "description": "目录之外还要检查的文件"
         }
       ]
+    },
+    {
+      "id": "unity-open",
+      "displayName": "打开 Unity 工程",
+      "description": "按 ProjectVersion.txt 找到对应版本的编辑器打开工程；启动后立即返回，已打开时跳过",
+      "idempotent": true,
+      "supportsDryRun": true,
+      "platforms": [
+        "win32",
+        "darwin"
+      ],
+      "params": [
+        {
+          "name": "projectPath",
+          "type": "string",
+          "default": ".",
+          "label": "工程目录",
+          "format": "path",
+          "description": "相对工作目录，缺省为工作目录本身"
+        }
+      ]
     }
   ]
 }

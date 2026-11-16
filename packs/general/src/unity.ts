@@ -1,4 +1,5 @@
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync, unlinkSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runCommand } from "../../../shared/exec";
@@ -149,7 +150,10 @@ export function listUnityEditors(): UnityEditor[] {
     }
   };
 
-  const hubDir = path.join(homedir(), "AppData", "Roaming", "UnityHub");
+  const mac = process.platform === "darwin";
+  const hubDir = mac
+    ? path.join(homedir(), "Library", "Application Support", "UnityHub")
+    : path.join(homedir(), "AppData", "Roaming", "UnityHub");
   const editorsV2 = path.join(hubDir, "editors-v2.json");
   if (existsSync(editorsV2)) {
     try {
@@ -158,7 +162,7 @@ export function listUnityEditors(): UnityEditor[] {
       };
       for (const editor of json.data ?? []) {
         for (const location of editor.location ?? []) {
-          add(editor.version ?? path.basename(path.dirname(location)), location);
+          add(editor.version ?? path.basename(path.dirname(location)), macBinary(location));
         }
       }
     } catch {
@@ -167,10 +171,12 @@ export function listUnityEditors(): UnityEditor[] {
   }
 
   const secondary = path.join(hubDir, "secondaryInstallPath.json");
-  const extraRoots: string[] = [
-    path.join(process.env["ProgramFiles"] ?? "C:/Program Files", "Unity/Hub/Editor"),
-    path.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Unity/Hub/Editor"),
-  ];
+  const extraRoots: string[] = mac
+    ? ["/Applications/Unity/Hub/Editor"]
+    : [
+        path.join(process.env["ProgramFiles"] ?? "C:/Program Files", "Unity/Hub/Editor"),
+        path.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Unity/Hub/Editor"),
+      ];
   if (existsSync(secondary)) {
     const raw = readFileSync(secondary, "utf8").replace(/^"|"$/g, "").trim();
     if (raw) {
@@ -186,12 +192,19 @@ export function listUnityEditors(): UnityEditor[] {
       if (!name.isDirectory()) {
         continue;
       }
-      const exe = path.join(root, name.name, "Editor", "Unity.exe");
+      const exe = mac
+        ? path.join(root, name.name, "Unity.app", "Contents", "MacOS", "Unity")
+        : path.join(root, name.name, "Editor", "Unity.exe");
       add(name.name, exe);
     }
   }
 
   return [...found.values()];
+}
+
+/** Hub 在 macOS 上记录的是 Unity.app，可执行文件在包内。 */
+function macBinary(location: string): string {
+  return location.endsWith(".app") ? path.join(location, "Contents", "MacOS", "Unity") : location;
 }
 
 export function resolveUnityEditor(version: string): UnityEditor {
@@ -285,4 +298,36 @@ export async function warmupUnity(options: {
 
 function tailText(text: string): string {
   return text.trim().split(/\r?\n/).filter(Boolean).slice(-12).join("\n");
+}
+
+/**
+ * 用工程对应版本的编辑器打开工程（unity-open）：detached 启动、不继承 stdio，
+ * 启动成功即返回；之后取消任务或 agent 退出都不影响 Unity。工程已被 Unity 打开时 skipped。
+ */
+export async function openUnity(options: { projectPath: string; logFile: string }): Promise<{ detail: string; code: number; skipped?: boolean }> {
+  if (!existsSync(options.projectPath)) {
+    throw new Error(`工程不存在: ${options.projectPath}`);
+  }
+  if (isUnityLockHeld(path.join(options.projectPath, "Temp", "UnityLockfile"))) {
+    return { detail: `Unity 已在打开该工程（Temp/UnityLockfile 被占用）：${options.projectPath}`, code: 0, skipped: true };
+  }
+  const version = readProjectVersion(options.projectPath);
+  const editor = resolveUnityEditor(version);
+  const child = spawn(editor.exe, ["-projectPath", options.projectPath], {
+    cwd: options.projectPath,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => resolve());
+    child.once("error", (error) => reject(new Error(`启动 Unity 失败：${error.message}`)));
+  });
+  child.unref();
+  try {
+    appendFileSync(options.logFile, `[unity-open] ${editor.exe} -projectPath ${options.projectPath} pid=${child.pid}\n`);
+  } catch {
+    // 日志写不了不影响启动
+  }
+  return { detail: `已启动 Unity ${version}（pid ${child.pid}）：${options.projectPath}`, code: 0 };
 }

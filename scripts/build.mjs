@@ -13,10 +13,11 @@ import { build } from "esbuild";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** 每个包需要的 ps1；occupants 两包都用，idle-quit 只在 general。 */
+/** 每个包需要的 ps1；occupants 三包都用，idle-quit 只在 general。 */
 const PACKS = {
   versionControl: ["list-occupants.ps1"],
   general: ["list-occupants.ps1", "quit-idle-apps.ps1"],
+  workingCopyPool: ["list-occupants.ps1"],
 };
 
 for (const [id, scripts] of Object.entries(PACKS)) {

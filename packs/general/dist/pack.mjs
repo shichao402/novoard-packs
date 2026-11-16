@@ -206,6 +206,13 @@ function peekResultJson(argv) {
   }
   return void 0;
 }
+function extras(result) {
+  const out = {};
+  if (result.choices !== void 0) out.choices = result.choices;
+  if (result.summary !== void 0) out.summary = result.summary;
+  if (result.pool !== void 0) out.pool = result.pool;
+  return out;
+}
 function writeResult(file, value) {
   if (!file) return;
   try {
@@ -268,11 +275,11 @@ async function runCli(manifest2, run2, argv, io = {}) {
     }
     if (result.code !== 0) {
       const detail = result.detail || `${parsed.tool.displayName} \u9000\u51FA\u7801 ${result.code}`;
-      writeResult(parsed.resultJson, { detail });
+      writeResult(parsed.resultJson, { detail, ...extras(result) });
       err(detail);
       return EXIT.FAIL;
     }
-    writeResult(parsed.resultJson, { detail: result.detail, ...result.skipped ? { skipped: true } : {} });
+    writeResult(parsed.resultJson, { detail: result.detail, ...result.skipped ? { skipped: true } : {}, ...extras(result) });
     out(result.detail);
     return EXIT.OK;
   } catch (error) {
@@ -283,6 +290,10 @@ async function runCli(manifest2, run2, argv, io = {}) {
     }
     const message = error instanceof Error ? error.message : String(error);
     writeResult(parsed.resultJson, { detail: message });
+    if (error instanceof UsageError) {
+      err(message);
+      return EXIT.USAGE;
+    }
     if (isUnexpected(error)) {
       err(error instanceof Error && error.stack ? error.stack : message);
       return EXIT.UNEXPECTED;
@@ -1077,17 +1088,27 @@ var releaseOccupants2 = {
     { name: "extraFiles", type: "string[]", label: "\u989D\u5916\u6587\u4EF6", format: "path", description: "\u76EE\u5F55\u4E4B\u5916\u8FD8\u8981\u68C0\u67E5\u7684\u6587\u4EF6" }
   ]
 };
+var unityOpen = {
+  id: "unity-open",
+  displayName: "\u6253\u5F00 Unity \u5DE5\u7A0B",
+  description: "\u6309 ProjectVersion.txt \u627E\u5230\u5BF9\u5E94\u7248\u672C\u7684\u7F16\u8F91\u5668\u6253\u5F00\u5DE5\u7A0B\uFF1B\u542F\u52A8\u540E\u7ACB\u5373\u8FD4\u56DE\uFF0C\u5DF2\u6253\u5F00\u65F6\u8DF3\u8FC7",
+  idempotent: true,
+  supportsDryRun: true,
+  platforms: ["win32", "darwin"],
+  params: [{ name: "projectPath", type: "string", default: ".", label: "\u5DE5\u7A0B\u76EE\u5F55", format: "path", description: "\u76F8\u5BF9\u5DE5\u4F5C\u76EE\u5F55\uFF0C\u7F3A\u7701\u4E3A\u5DE5\u4F5C\u76EE\u5F55\u672C\u8EAB" }]
+};
 var manifest = {
   id: "general",
   displayName: "\u901A\u7528\u5DE5\u5177",
   schemaVersion: 1,
   runtime: "node",
   entry: "dist/pack.mjs",
-  tools: [unityWarmup, quitIdle, releaseOccupants2]
+  tools: [unityWarmup, quitIdle, releaseOccupants2, unityOpen]
 };
 
 // packs/general/src/unity.ts
-import { closeSync as closeSync2, existsSync as existsSync3, openSync as openSync2, readFileSync, readdirSync, readSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
+import { spawn as spawn2 } from "node:child_process";
+import { appendFileSync as appendFileSync2, closeSync as closeSync2, existsSync as existsSync3, openSync as openSync2, readFileSync, readdirSync, readSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
 import { homedir } from "node:os";
 import path5 from "node:path";
 var UNITY_WARN_KEYWORDS = ["error", "exception", "failed"];
@@ -1199,21 +1220,22 @@ function listUnityEditors() {
       found.set(exe.toLowerCase(), { version, exe });
     }
   };
-  const hubDir = path5.join(homedir(), "AppData", "Roaming", "UnityHub");
+  const mac = process.platform === "darwin";
+  const hubDir = mac ? path5.join(homedir(), "Library", "Application Support", "UnityHub") : path5.join(homedir(), "AppData", "Roaming", "UnityHub");
   const editorsV2 = path5.join(hubDir, "editors-v2.json");
   if (existsSync3(editorsV2)) {
     try {
       const json = JSON.parse(readFileSync(editorsV2, "utf8"));
       for (const editor of json.data ?? []) {
         for (const location of editor.location ?? []) {
-          add(editor.version ?? path5.basename(path5.dirname(location)), location);
+          add(editor.version ?? path5.basename(path5.dirname(location)), macBinary(location));
         }
       }
     } catch {
     }
   }
   const secondary = path5.join(hubDir, "secondaryInstallPath.json");
-  const extraRoots = [
+  const extraRoots = mac ? ["/Applications/Unity/Hub/Editor"] : [
     path5.join(process.env["ProgramFiles"] ?? "C:/Program Files", "Unity/Hub/Editor"),
     path5.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Unity/Hub/Editor")
   ];
@@ -1231,11 +1253,14 @@ function listUnityEditors() {
       if (!name.isDirectory()) {
         continue;
       }
-      const exe = path5.join(root, name.name, "Editor", "Unity.exe");
+      const exe = mac ? path5.join(root, name.name, "Unity.app", "Contents", "MacOS", "Unity") : path5.join(root, name.name, "Editor", "Unity.exe");
       add(name.name, exe);
     }
   }
   return [...found.values()];
+}
+function macBinary(location) {
+  return location.endsWith(".app") ? path5.join(location, "Contents", "MacOS", "Unity") : location;
 }
 function resolveUnityEditor(version) {
   const editors = listUnityEditors();
@@ -1313,6 +1338,33 @@ async function warmupUnity(options) {
 function tailText(text) {
   return text.trim().split(/\r?\n/).filter(Boolean).slice(-12).join("\n");
 }
+async function openUnity(options) {
+  if (!existsSync3(options.projectPath)) {
+    throw new Error(`\u5DE5\u7A0B\u4E0D\u5B58\u5728: ${options.projectPath}`);
+  }
+  if (isUnityLockHeld(path5.join(options.projectPath, "Temp", "UnityLockfile"))) {
+    return { detail: `Unity \u5DF2\u5728\u6253\u5F00\u8BE5\u5DE5\u7A0B\uFF08Temp/UnityLockfile \u88AB\u5360\u7528\uFF09\uFF1A${options.projectPath}`, code: 0, skipped: true };
+  }
+  const version = readProjectVersion(options.projectPath);
+  const editor = resolveUnityEditor(version);
+  const child = spawn2(editor.exe, ["-projectPath", options.projectPath], {
+    cwd: options.projectPath,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false
+  });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", () => resolve());
+    child.once("error", (error) => reject(new Error(`\u542F\u52A8 Unity \u5931\u8D25\uFF1A${error.message}`)));
+  });
+  child.unref();
+  try {
+    appendFileSync2(options.logFile, `[unity-open] ${editor.exe} -projectPath ${options.projectPath} pid=${child.pid}
+`);
+  } catch {
+  }
+  return { detail: `\u5DF2\u542F\u52A8 Unity ${version}\uFF08pid ${child.pid}\uFF09\uFF1A${options.projectPath}`, code: 0 };
+}
 
 // packs/general/src/index.ts
 var byId = new Map(manifest.tools.map((t) => [t.id, t]));
@@ -1359,6 +1411,8 @@ async function run(toolId, rawParams, ctx) {
       );
     case "release-occupants":
       return runReleaseOccupants(params, ctx);
+    case "unity-open":
+      return openUnity({ projectPath: path6.resolve(ctx.cwd, String(params.projectPath ?? ".")), logFile: ctx.logFile });
     default:
       throw new Error(`\u672A\u5B9E\u73B0\u5DE5\u5177: ${toolId}`);
   }

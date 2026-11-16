@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { manifest as general } from "../packs/general/src/manifest";
 import { manifest as versionControl } from "../packs/versionControl/src/manifest";
+import { manifest as workingCopyPool } from "../packs/workingCopyPool/src/manifest";
 import type { ToolManifest } from "../shared/types";
 
 // 基准：cronkit 4c7b2ec `BUILTIN_MANIFEST.tools`，去掉 script 工具与 confirmRemoteWrite 参数。
@@ -11,7 +12,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const cronkitTools: ToolManifest[] = JSON.parse(
   readFileSync(path.join(here, "fixtures", "cronkit-builtin-tools.json"), "utf8"),
 );
-const NEW_TOOLS = new Set(["release-occupants"]);
+const NEW_TOOLS = new Set(["release-occupants", "unity-open"]);
 // cronkit 由步骤 timeout 承担、迁移后需单列的参数
 const NEW_PARAMS: Record<string, string[]> = { "quit-idle": ["timeout"] };
 
@@ -65,18 +66,19 @@ describe("manifest 与 cronkit builtin 一致", () => {
   });
 
   it("toolset 头部字段符合 ADR-0019", () => {
-    for (const m of [versionControl, general]) {
+    for (const m of [versionControl, general, workingCopyPool]) {
       expect(m).toMatchObject({ schemaVersion: 1, runtime: "node", entry: "dist/pack.mjs" });
     }
   });
 
-  it("platforms：versionControl 全平台；quit-idle、release-occupants 仅 win32；unity-warmup win32+darwin", () => {
+  it("platforms：versionControl 全平台；quit-idle、release-occupants 仅 win32；unity-warmup、unity-open win32+darwin", () => {
     expect(versionControl.tools.every((t) => t.platforms === undefined)).toBe(true);
     const byId = Object.fromEntries(general.tools.map((t) => [t.id, t.platforms]));
     expect(byId).toEqual({
       "unity-warmup": ["win32", "darwin"],
       "quit-idle": ["win32"],
       "release-occupants": ["win32"],
+      "unity-open": ["win32", "darwin"],
     });
   });
 
@@ -105,5 +107,48 @@ describe("manifest 与 cronkit builtin 一致", () => {
     const quit = general.tools.find((t) => t.id === "quit-idle");
     const formats = Object.fromEntries((quit?.params ?? []).map((p) => [p.name, p.format]));
     expect(formats).toMatchObject({ idleFor: "duration", countIdleFrom: "time", until: "time", retryInterval: "duration", closeWait: "duration", timeout: "duration" });
+  });
+});
+
+describe("workingCopyPool manifest（PRD working-copy-pool、ADR-0020）", () => {
+  const byId = Object.fromEntries(workingCopyPool.tools.map((t) => [t.id, t]));
+
+  it("工具与 kind：三个查询工具、四个执行工具", () => {
+    expect(workingCopyPool.tools.map((t) => [t.id, t.kind])).toEqual([
+      ["candidates", "query"],
+      ["occupied", "query"],
+      ["status", "query"],
+      ["acquire", "action"],
+      ["release", "action"],
+      ["gc", "action"],
+      ["refresh", "action"],
+    ]);
+  });
+
+  it("全平台、不声明独占工作区，都支持 dry-run 与 result json", () => {
+    for (const t of workingCopyPool.tools) {
+      expect(t.platforms, t.id).toBeUndefined();
+      expect(t.requiresExclusiveWorkspace, t.id).toBeUndefined();
+      expect(t.supportsDryRun && t.supportsResultJson, t.id).toBe(true);
+      for (const p of t.params ?? []) expect(p.label, `${t.id}.${p.name}`).toBeTruthy();
+    }
+  });
+
+  it("参数：acquire branch 必填、ttl/tag 可选；release 只有 branch；其余无参数", () => {
+    expect(byId.acquire.params?.map((p) => [p.name, p.required ?? false])).toEqual([
+      ["branch", true],
+      ["ttl", false],
+      ["tag", false],
+    ]);
+    expect(byId.release.params?.map((p) => p.name)).toEqual(["branch"]);
+    for (const id of ["candidates", "occupied", "status", "gc", "refresh"]) expect(byId[id].params, id).toBeUndefined();
+  });
+});
+
+describe("general/unity-open", () => {
+  it("projectPath 缺省为 .，平台 win32+darwin", () => {
+    const tool = general.tools.find((t) => t.id === "unity-open");
+    expect(tool).toMatchObject({ platforms: ["win32", "darwin"], params: [{ name: "projectPath", type: "string", default: "." }] });
+    expect(tool?.requiresExclusiveWorkspace).toBeUndefined();
   });
 });

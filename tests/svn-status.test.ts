@@ -8,7 +8,7 @@ import {
   prioritizeLockTargets,
   revertWriteRelatives,
   updateWriteRelatives,
-} from "../packs/versionControl/src/svn-status";
+} from "../shared/svn-status";
 
 const sample = `<?xml version="1.0" encoding="UTF-8"?>
 <status>

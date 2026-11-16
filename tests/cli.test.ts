@@ -17,7 +17,8 @@ import type { ToolManifest, ToolParamSpec, ToolsetManifest } from "../shared/typ
 import { validateToolParams } from "../shared/validate";
 import { manifest as generalManifest } from "../packs/general/src/manifest";
 import { manifest as vcManifest } from "../packs/versionControl/src/manifest";
-import { createUpdateProgress, isSvnUpdateItemLine } from "../packs/versionControl/src/svn-status";
+import { manifest as poolManifest } from "../packs/workingCopyPool/src/manifest";
+import { createUpdateProgress, isSvnUpdateItemLine } from "../shared/svn-status";
 import { followUnityLog, unityProgressPercent } from "../packs/general/src/unity";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -39,6 +40,8 @@ function paramsToArgv(params: Record<string, unknown>): string[] {
 }
 
 function sample(spec: ToolParamSpec): unknown {
+  // workingCopyPool/acquire 的 ttl 有格式校验（dry-run 也校验）
+  if (spec.name === "ttl") return "3d";
   switch (spec.type) {
     case "enum":
       return spec.enum?.[spec.enum.length - 1];
@@ -60,6 +63,7 @@ function sampleParams(tool: ToolManifest): Record<string, unknown> {
 const packs: Array<[string, ToolsetManifest]> = [
   ["versionControl", vcManifest],
   ["general", generalManifest],
+  ["workingCopyPool", poolManifest],
 ];
 
 describe("parseArgv", () => {

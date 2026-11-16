@@ -5,7 +5,7 @@ import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
 import { quitIdleApps } from "./idle-quit";
 import { manifest } from "./manifest";
-import { warmupUnity } from "./unity";
+import { openUnity, warmupUnity } from "./unity";
 
 export { manifest };
 
@@ -63,6 +63,8 @@ export async function run(
       );
     case "release-occupants":
       return runReleaseOccupants(params, ctx);
+    case "unity-open":
+      return openUnity({ projectPath: path.resolve(ctx.cwd, String(params.projectPath ?? ".")), logFile: ctx.logFile });
     default:
       throw new Error(`未实现工具: ${toolId}`);
   }

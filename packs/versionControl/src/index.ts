@@ -4,7 +4,7 @@ import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
 import { isGitTool, runGitTool } from "./git";
 import { manifest } from "./manifest";
-import { cleanupAfterInterrupt, SVN_GRACEFUL_MS, svnCheckAndUpdate, svnRevertTree } from "./svn";
+import { cleanupAfterInterrupt, SVN_GRACEFUL_MS, svnCheckAndUpdate, svnRevertTree } from "../../../shared/svn-update";
 
 export { manifest };
 

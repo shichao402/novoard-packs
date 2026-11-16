@@ -1,6 +1,6 @@
 import type { ToolManifest, ToolsetManifest } from "../../../shared/types";
 
-// unity-warmup、quit-idle 从 cronkit `src/core/toolset/builtin.ts` 转写；release-occupants 为新增工具。
+// unity-warmup、quit-idle 从 cronkit `src/core/toolset/builtin.ts` 转写；release-occupants、unity-open 为新增工具。
 
 const unityWarmup: ToolManifest = {
   id: "unity-warmup",
@@ -48,11 +48,21 @@ const releaseOccupants: ToolManifest = {
   ],
 };
 
+const unityOpen: ToolManifest = {
+  id: "unity-open",
+  displayName: "打开 Unity 工程",
+  description: "按 ProjectVersion.txt 找到对应版本的编辑器打开工程；启动后立即返回，已打开时跳过",
+  idempotent: true,
+  supportsDryRun: true,
+  platforms: ["win32", "darwin"],
+  params: [{ name: "projectPath", type: "string", default: ".", label: "工程目录", format: "path", description: "相对工作目录，缺省为工作目录本身" }],
+};
+
 export const manifest: ToolsetManifest = {
   id: "general",
   displayName: "通用工具",
   schemaVersion: 1,
   runtime: "node",
   entry: "dist/pack.mjs",
-  tools: [unityWarmup, quitIdle, releaseOccupants],
+  tools: [unityWarmup, quitIdle, releaseOccupants, unityOpen],
 };
