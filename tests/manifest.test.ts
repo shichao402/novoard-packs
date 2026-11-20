@@ -113,7 +113,7 @@ describe("manifest 与 cronkit builtin 一致", () => {
 describe("workingCopyPool manifest（PRD working-copy-pool、ADR-0020）", () => {
   const byId = Object.fromEntries(workingCopyPool.tools.map((t) => [t.id, t]));
 
-  it("工具与 kind：三个查询工具、四个执行工具", () => {
+  it("工具与 kind：三个查询工具、五个执行工具", () => {
     expect(workingCopyPool.tools.map((t) => [t.id, t.kind])).toEqual([
       ["candidates", "query"],
       ["occupied", "query"],
@@ -122,6 +122,7 @@ describe("workingCopyPool manifest（PRD working-copy-pool、ADR-0020）", () =>
       ["release", "action"],
       ["gc", "action"],
       ["refresh", "action"],
+      ["capture-sparse", "action"],
     ]);
   });
 
@@ -141,6 +142,7 @@ describe("workingCopyPool manifest（PRD working-copy-pool、ADR-0020）", () =>
       ["tag", false],
     ]);
     expect(byId.release.params?.map((p) => p.name)).toEqual(["branch"]);
+    expect(byId["capture-sparse"].params?.map((p) => [p.name, p.required ?? false])).toEqual([["path", true]]);
     for (const id of ["candidates", "occupied", "status", "gc", "refresh"]) expect(byId[id].params, id).toBeUndefined();
   });
 });

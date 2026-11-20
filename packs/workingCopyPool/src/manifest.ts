@@ -1,6 +1,6 @@
 import type { ToolManifest, ToolsetManifest } from "../../../shared/types";
 
-// 规格：docs/prd/working-copy-pool.md。所有工具的 cwd 都是池根；全平台，释放占用只在 win32 生效。
+// 规格：docs/prd/working-copy-pool.md。除 capture-sparse 外，所有工具的 cwd 都是池根；全平台，释放占用只在 win32 生效。
 // 不声明 requiresExclusiveWorkspace：agent 的路径锁按 cwd 字符串加锁、不解析链接，管不住槽位，以本包的锁和 phase 为准。
 
 const candidates: ToolManifest = {
@@ -79,11 +79,22 @@ const refresh: ToolManifest = {
   supportsResultJson: true,
 };
 
+const captureSparse: ToolManifest = {
+  id: "capture-sparse",
+  displayName: "导出稀疏配置",
+  description: "读取现有工作副本各目录的 depth，导出可贴进 pool.toml 的最小 [sparse] 配置；只读，不需要 pool.toml",
+  kind: "action",
+  idempotent: true,
+  supportsDryRun: true,
+  supportsResultJson: true,
+  params: [{ name: "path", type: "string", required: true, label: "工作副本", description: "现有工作副本目录，相对路径按 cwd 解析" }],
+};
+
 export const manifest: ToolsetManifest = {
   id: "workingCopyPool",
   displayName: "工作副本池",
   schemaVersion: 1,
   runtime: "node",
   entry: "dist/pack.mjs",
-  tools: [candidates, occupied, status, acquire, release, gc, refresh],
+  tools: [candidates, occupied, status, acquire, release, gc, refresh, captureSparse],
 };

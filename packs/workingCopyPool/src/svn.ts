@@ -3,13 +3,14 @@
  * 稀疏检出与重新排除、落后 revision。所有命令以池根为 cwd、以绝对路径指定槽位，
  * 这样中断恢复时能按命令行认出还在跑的 svn 进程。
  */
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { runCommand, spawnCaptured } from "../../../shared/exec";
 import { listOccupants } from "../../../shared/occupants";
 import { cleanupAfterInterrupt, SVN_GRACEFUL_MS, tailLines } from "../../../shared/svn-run";
 import { createUpdateProgress } from "../../../shared/svn-status";
 import type { ToolRunContext } from "../../../shared/types";
+import { isDepth, isFullCheckout, joinRel, SparsePlan, type Depth, type DirDepth, type SparseSpec } from "./sparse";
 
 export class SvnError extends Error {
   constructor(
@@ -29,6 +30,8 @@ export type SvnRunOptions = {
   timeoutMs?: number;
   /** 进度前缀；给了就按 update 输出计数。 */
   progress?: string;
+  /** stdout 逐行回调（输出很大时用，捕获的 stdout 会被截断）。 */
+  onLine?: (line: string) => void;
 };
 
 export type SvnCtx = Pick<ToolRunContext, "cwd" | "timeoutMs" | "logFile" | "abortSignal" | "onProgress">;
@@ -46,7 +49,7 @@ export async function svn(ctx: SvnCtx, args: string[], options: SvnRunOptions = 
     logFile: ctx.logFile,
     abortSignal: ctx.abortSignal,
     gracefulMs: SVN_GRACEFUL_MS,
-    onStdoutLine: counter?.line,
+    onStdoutLine: options.onLine ?? counter?.line,
   }).done;
   if (result.cancelled) {
     const note = options.wc && existsSync(path.join(options.wc, ".svn")) ? await cleanupAfterInterrupt(args, { cwd: options.wc, logFile: ctx.logFile }) : "";
@@ -196,116 +199,144 @@ export function isObstruction(text: string): boolean {
   return /E155000|E155037|E195016|obstruct|tree conflict|树冲突|阻碍/i.test(text);
 }
 
-/**
- * 稀疏规划：被排除目录的各级父目录展开到 immediates，被排除目录 exclude，其余 infinity。
- * 返回父目录集合（相对路径，"" 为根）。
- */
-export function sparseParents(exclude: string[]): Set<string> {
-  const parents = new Set<string>();
-  for (const item of exclude) {
-    const parts = item.split("/");
-    for (let i = 0; i < parts.length; i++) parents.add(parts.slice(0, i).join("/"));
-  }
-  return parents;
-}
-
-/** 本地目录下受版本控制的子目录名（immediates 展开后子目录以 empty 深度出现在磁盘上）。 */
-function localChildDirs(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((name) => name !== ".svn")
-    .filter((name) => {
-      try {
-        return statSync(path.join(dir, name)).isDirectory();
-      } catch {
-        return false;
-      }
-    })
-    .sort();
-}
+/** 稀疏执行（PRD「稀疏」）：规划见 sparse.ts。 */
 
 function abs(wc: string, rel: string): string {
   return rel ? path.join(wc, ...rel.split("/")) : wc;
 }
 
-async function setDepth(ctx: SvnCtx, wc: string, depth: string, rels: string[], label: string): Promise<void> {
+const DEPTH_LABEL: Record<Depth, string> = { exclude: "排除", empty: "空壳", files: "检出", immediates: "展开", infinity: "检出" };
+
+async function setDepth(ctx: SvnCtx, wc: string, depth: Depth, rels: string[]): Promise<void> {
   // 一次带太多目标会撞命令行长度上限，分批
   for (let i = 0; i < rels.length; i += 50) {
     const batch = rels.slice(i, i + 50).map((rel) => abs(wc, rel));
-    await svn(ctx, ["update", "--set-depth", depth, ...batch], { wc, progress: label });
+    await svn(ctx, ["update", "--set-depth", depth, ...batch], { wc, progress: DEPTH_LABEL[depth] });
   }
 }
 
-/** 新建流程第 2 步：根目录 empty 检出后逐层展开，被排除目录从头到尾不下载。 */
-export async function sparseCheckout(ctx: SvnCtx, url: string, wc: string, exclude: string[]): Promise<void> {
-  if (exclude.length === 0) {
+/** 新建流程第 2 步：按规格检出，根目录先以规划的 depth 检出，再逐层调整，不需要的目录从头到尾不下载。 */
+export async function sparseCheckout(ctx: SvnCtx, url: string, wc: string, spec: SparseSpec): Promise<void> {
+  if (isFullCheckout(spec)) {
     await svn(ctx, ["checkout", url, wc], { wc, progress: "检出" });
     return;
   }
-  await svn(ctx, ["checkout", "--depth", "empty", url, wc], { wc });
-  await expandLevel(ctx, wc, "", new Set(exclude), sparseParents(exclude));
-}
-
-async function expandLevel(ctx: SvnCtx, wc: string, rel: string, exclude: Set<string>, parents: Set<string>): Promise<void> {
-  await svn(ctx, ["update", "--set-depth", "immediates", abs(wc, rel)], { wc });
-  const toExclude: string[] = [];
-  const toFull: string[] = [];
-  const toRecurse: string[] = [];
-  for (const name of localChildDirs(abs(wc, rel))) {
-    const child = rel ? `${rel}/${name}` : name;
-    if (exclude.has(child)) toExclude.push(child);
-    else if (parents.has(child)) toRecurse.push(child);
-    else toFull.push(child);
-  }
-  if (toExclude.length) await setDepth(ctx, wc, "exclude", toExclude, "排除");
-  if (toFull.length) await setDepth(ctx, wc, "infinity", toFull, "检出");
-  for (const child of toRecurse) await expandLevel(ctx, wc, child, exclude, parents);
+  const plan = new SparsePlan(spec);
+  await svn(ctx, ["checkout", "--depth", plan.wcDepth("", spec.root), url, wc], { wc, progress: "检出" });
+  await applySparse(ctx, wc, spec);
 }
 
 /**
- * switch / update 之后按 sparse.exclude 重新排除：目标分支新增的被排除目录会被拉下来，
- * 父目录下新增的普通子目录只会以 empty 深度出现，要补成 infinity。
- * 返回调整说明（dry-run 与日志用）。
+ * 按规格把工作副本调整到位，新建、switch、update 之后都调用：
+ * 列出的目录设到规划 depth；infinity 展开节点下新增的子目录补成 infinity；
+ * 非 infinity 目录下需要的空壳和列出目录逐个带下来，不需要的排除。
+ * 列出了但当前分支上没有的路径跳过并记一条说明。返回调整说明。
  */
-export async function reapplySparse(ctx: SvnCtx, wc: string, exclude: string[]): Promise<string[]> {
-  if (exclude.length === 0) return [];
-  const excludeSet = new Set(exclude);
-  const parents = sparseParents(exclude);
+export async function applySparse(ctx: SvnCtx, wc: string, spec: SparseSpec): Promise<string[]> {
+  // 完整检出也走一遍：根目录若还是之前稀疏留下的 immediates/empty，设回 infinity 把排除的目录带回来
+  const plan = new SparsePlan(spec);
   const notes: string[] = [];
-  const walk = async (rel: string): Promise<void> => {
+  const missing: string[] = [];
+
+  const readLevel = async (rel: string): Promise<{ self?: SvnInfoEntry; children: Map<string, SvnInfoEntry> } | undefined> => {
     const result = await svn(ctx, ["info", "--xml", "--depth", "immediates", abs(wc, rel)], { allowFail: true });
-    if (result.code !== 0) return;
-    const entries = parseInfoXml(result.stdout);
-    const self = entries.find((e) => relTo(wc, e.path, ctx.cwd) === (rel || "."));
-    if (self && self.depth !== "immediates" && self.depth !== "infinity") {
-      await svn(ctx, ["update", "--set-depth", "immediates", abs(wc, rel)], { wc });
-      notes.push(`展开 ${rel || "."}`);
-      return walk(rel);
+    if (result.code !== 0) return undefined;
+    const children = new Map<string, SvnInfoEntry>();
+    let self: SvnInfoEntry | undefined;
+    for (const entry of parseInfoXml(result.stdout)) {
+      const r = relTo(wc, entry.path, ctx.cwd);
+      if (r === (rel || ".")) self = entry;
+      else if (entry.kind === "dir") children.set(r, entry);
     }
-    const toExclude: string[] = [];
-    const toFull: string[] = [];
-    const toRecurse: string[] = [];
-    for (const entry of entries) {
-      const child = relTo(wc, entry.path, ctx.cwd);
-      if (child === (rel || ".") || entry.kind !== "dir") continue;
-      // 已排除的目录 info 仍会列出（depth=exclude），对它再 set-depth 会报 E155007
-      if (entry.depth === "exclude") continue;
-      if (excludeSet.has(child)) toExclude.push(child);
-      else if (parents.has(child)) toRecurse.push(child);
-      else if (entry.depth && entry.depth !== "infinity") toFull.push(child);
-    }
-    if (toExclude.length) {
-      await setDepth(ctx, wc, "exclude", toExclude, "排除");
-      notes.push(`排除 ${toExclude.join("、")}`);
-    }
-    if (toFull.length) {
-      await setDepth(ctx, wc, "infinity", toFull, "检出");
-      notes.push(`补全 ${toFull.join("、")}`);
-    }
-    for (const child of toRecurse) await walk(child);
+    return { self, children };
   };
-  await walk("");
+
+  const walk = async (rel: string, depth: Depth): Promise<void> => {
+    let level = await readLevel(rel);
+    if (!level?.self) return;
+    if (!plan.satisfied(rel, depth, level.self.depth)) {
+      const target = plan.wcDepth(rel, depth);
+      await setDepth(ctx, wc, target, [rel]);
+      notes.push(`${rel || "(根)"} 设为 ${target}`);
+      level = await readLevel(rel);
+      if (!level?.self) return;
+    }
+    if (!plan.hasDescendants(rel)) return;
+
+    const buckets = new Map<Depth, string[]>();
+    const push = (d: Depth, child: string): void => void buckets.set(d, [...(buckets.get(d) ?? []), child]);
+    const recurse: [string, Depth][] = [];
+    const needed = new Set(plan.neededChildren(rel).map((name) => joinRel(rel, name)));
+    const shellParent = depth !== "infinity";
+
+    for (const [child, entry] of level.children) {
+      let d = plan.depthOf(child, depth);
+      // 非 infinity 目录下没列出、也不是列出路径祖先的子目录：empty/files 下本不该在，排除；immediates 下保持 empty
+      if (shellParent && !needed.has(child) && !(child in spec.paths) && depth !== "immediates") d = "exclude";
+      if (d === "exclude") {
+        if (entry.depth !== "exclude") push("exclude", child);
+        continue;
+      }
+      if (plan.hasDescendants(child)) {
+        recurse.push([child, d]);
+        continue;
+      }
+      if (entry.depth !== d) push(d, child);
+    }
+
+    const toAdd: [string, Depth][] = [];
+    for (const child of needed) {
+      if (level.children.has(child)) continue;
+      const d = plan.depthOf(child, depth);
+      if (d === "exclude") continue;
+      // infinity / immediates 目录下 info 会列出所有子目录，没列出就是分支上没有
+      if (depth === "infinity" || depth === "immediates" || level.self.depth === "infinity" || level.self.depth === "immediates") {
+        missing.push(child);
+        continue;
+      }
+      toAdd.push([child, d]);
+    }
+
+    const order: Depth[] = ["exclude", "empty", "files", "immediates", "infinity"];
+    for (const d of order) {
+      const items = buckets.get(d);
+      if (!items?.length) continue;
+      await setDepth(ctx, wc, d, items);
+      notes.push(`${DEPTH_LABEL[d]}（${d}）${items.join("、")}`);
+    }
+    for (const [child, d] of toAdd) {
+      await setDepth(ctx, wc, plan.wcDepth(child, d), [child]);
+      // 分支上没有这个路径时 svn update 返回 0 但什么也不建
+      if (!existsSync(abs(wc, child))) {
+        missing.push(child);
+        continue;
+      }
+      if (plan.hasDescendants(child)) recurse.push([child, d]);
+      else notes.push(`${DEPTH_LABEL[d]}（${d}）${child}`);
+    }
+    for (const [child, d] of recurse) await walk(child, d);
+  };
+
+  await walk("", spec.root);
+  if (missing.length) notes.push(`分支上没有，已跳过：${missing.join("、")}`);
   return notes;
+}
+
+/**
+ * 读工作副本每个目录的实际 depth（`svn info -R --show-item depth`，文件的 depth 为空，跳过）。
+ * 逐行流式解析，不把整份输出留在内存里。
+ */
+export async function readDirDepths(ctx: SvnCtx, wc: string): Promise<DirDepth[]> {
+  const dirs: DirDepth[] = [];
+  await svn(ctx, ["info", "-R", "--show-item", "depth", wc], {
+    onLine: (line) => {
+      const match = /^(\S+)\s+(.+)$/.exec(line);
+      if (!match || !isDepth(match[1])) return;
+      const rel = relTo(wc, match[2].trim(), ctx.cwd);
+      dirs.push({ rel: rel === "." ? "" : rel, depth: match[1] });
+    },
+  });
+  return dirs;
 }
 
 /** 落后多少个 revision：工作副本 revision 之后、这个分支 URL 上的提交数。读不到返回 undefined。 */

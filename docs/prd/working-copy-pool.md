@@ -160,14 +160,38 @@ trunk = "trunk"
 s2pub = "branches/s2_publish"
 
 [sparse]
-# 相对工作副本根，不检出这些目录
-exclude = ["client/Assets/ArtRes", "client/Assets/Audio"]
+# 根目录 depth，缺省 infinity
+root = "empty"
+
+# 相对工作副本根的路径到 svn depth（exclude / empty / files / immediates / infinity）
+[sparse.depth]
+"client/Assets/Scripts" = "infinity"
+"client/Assets/Plugins" = "infinity"
+"client/ProjectSettings" = "infinity"
+"client/Packages"       = "infinity"
+"client/Assets/UI"      = "infinity"
+"client/Assets/UI/Big"  = "exclude"
 ```
 
 - 配置由用户手写，工具只读不写。
 - 每次运行都重新读取配置，改完即生效。
 - 解析用打进 `dist/pack.mjs` 的 TOML 库，不引入运行时依赖。
 - 校验失败时所有工具以退出码 64 失败，result json 写明哪一行哪个字段。
+
+### 稀疏规则
+
+`[sparse]` 是一张 depth 映射表，内部只有这一种模型：
+
+- 根目录 depth 由 `root` 给出，不能为 `exclude`。没有 `[sparse]` 段等于 `root = "infinity"` 且不列任何路径，即完整检出。
+- 列出的路径取列出的 depth。未列出的路径从父目录继承：父目录为 `infinity` 时子目录也是 `infinity`；否则子目录不在磁盘上（父目录为 `immediates` 时以 `empty` 出现）。
+- 列出路径的各级祖先，按继承本来不会出现的，自动建成 `empty` 空壳，不用写出来。上例中 `client`、`client/Assets` 就是空壳。
+- 列出路径落在某个 `exclude` 路径之下、同一路径写两种 depth，都是配置错误。
+- 白名单（`root = "empty"` 加若干 `infinity`）下，分支上新增的顶层目录不会被下载；黑名单（`root = "infinity"` 加若干 `exclude`）下则会。按工程选择。
+- 列出了但当前分支上没有的路径跳过，并在结果里记一条说明，不算失败。
+
+兼容写法：`exclude = ["a", "b"]` 等价于 `root = "infinity"`，且 `[sparse.depth]` 里 `"a" = "exclude"`、`"b" = "exclude"`。`exclude` 不能和 `root`、`[sparse.depth]` 同时出现。
+
+已有精简工程时，用 `capture-sparse` 从工作副本导出这张表，贴进 `pool.toml` 即可复刻。
 
 ## 目录与状态
 
@@ -208,7 +232,7 @@ exclude = ["client/Assets/ArtRes", "client/Assets/Audio"]
 
 ## 工具清单
 
-所有工具的 cwd 都是池根。平台：全平台；涉及释放占用的部分只在 win32 生效。
+除 `capture-sparse` 外，所有工具的 cwd 都是池根。平台：全平台；涉及释放占用的部分只在 win32 生效。
 
 ### 查询工具（`kind: "query"`，ADR-0020）
 
@@ -246,24 +270,37 @@ exclude = ["client/Assets/ArtRes", "client/Assets/Audio"]
 
 **`refresh`**，无参数。对每个常驻分支：
 
-- 在池里：`svn update`，再按 `sparse.exclude` 重新排除，最后读回落后 revision。
+- 在池里：`svn update`，再按 `[sparse]` 重新应用稀疏规则，最后读回落后 revision。
 - 不在池里：按 `acquire` 的槽位选择规则准备，但不创建租约。
 - 被占用或阻塞：跳过并报告原因，不抢。
 
 任一常驻分支失败不影响其他分支，最后按失败数决定退出码。
+
+**`capture-sparse`**，参数 `path`（必填，现有工作副本目录，相对路径按 cwd 解析）。只读，不需要 `pool.toml`。
+
+- `svn info -R --show-item depth` 读出每个目录的实际 depth，逐行解析，不把整份输出留在内存里。
+- 只保留跟继承结果不一致的目录：`infinity` 目录下的 `infinity`、`immediates` 目录下的 `empty` 不列出；下面还有列出路径的空壳也不列出。
+- `immediates` 目录下没有 `empty` 子目录（子目录都单独设过）时，视为 `infinity` 展开节点。
+- `detail` 输出可直接贴进 `pool.toml` 的 `[sparse]` 片段。
 
 ### 切换流程
 
 1. 锁内把槽位 `phase` 设为 `switching`，记下目标分支；删除旧分支的链接。
 2. 改动存档（见下）。
 3. Windows 上释放占用：复用 `shared/occupants` 释放该槽位目录的占用进程，IDE 只请求正常关闭。释放不掉就恢复 `phase = ready`、恢复链接，失败返回。
-4. `svn switch <url>`，然后按 `sparse.exclude` 重新排除（switch 后目标分支里新增的被排除目录会被拉下来）。
+4. `svn switch <url>`，然后按 `[sparse]` 重新应用（switch 保留各目录已设的 depth；目标分支新增的目录按继承规则补设，列出了但分支上没有的路径跳过）。
 5. `svn info` 校验 URL。成功则锁内设 `ready`、写 `branch`、`url`、租约，建新链接。
 
 ### 新建流程
 
 1. 锁内占一个新槽位号，`phase = switching`。
-2. 稀疏检出：根目录 `--depth empty` 检出；对 `sparse.exclude` 每一项的各级父目录用 `--set-depth immediates` 展开，对被排除的目录 `--set-depth exclude`，其余目录 `--set-depth infinity`。这样被排除的目录从头到尾不会被下载。
+2. 稀疏检出：根目录按 `root` 检出（下面还有列出路径的 `infinity` 目录先以 `immediates` 展开），再从根逐层调整：
+   - 列出的目录设到列出的 depth；
+   - 非 `infinity` 目录下需要的空壳和列出目录逐个 `--set-depth` 带下来，`empty`/`files` 目录下不需要的子目录排除；
+   - `infinity` 展开节点下未列出的子目录设为 `infinity`，列出 `exclude` 的设为 `exclude`；
+   - 同一层按 depth 分批，每批最多 50 个路径。
+
+   这样不需要的目录从头到尾不会被下载。同一套逻辑也用于切换后与 refresh 后的重新应用，配置改了下次运行即按新规则收敛（包括改回完整检出）。
 3. 之后同切换流程第 5 步。
 
 第一版只做稀疏检出。“从已有槽位本地复制再切换”更快，但源槽位可能正被 Unity 或 IDE 占用，复制出的工作副本状态不可靠，留到后续评估。
@@ -331,6 +368,6 @@ Hub 来源清单新增第三条：git 指向本仓，subdir `packs/workingCopyPo
 ## 风险
 
 - `svn switch` 跨差异很大的分支时，耗时可能接近重新检出，需要在 P11 用真实分支实测。
-- `--set-depth exclude` 的排除规则如果写错，新建槽位会下载大量美术资源。工具应在 dry-run 中打印将要排除和展开的目录。
+- 稀疏规则如果写错，新建槽位会下载大量美术资源。dry-run 打印根目录 depth、按 depth 分组的列出路径和自动空壳；已有精简工程的，优先用 `capture-sparse` 导出而不是手写。
 - Windows junction 指向的目录被 IDE 打开时，删除 junction 可能失败。切换流程把删除链接放在释放占用之后重试一次，仍失败就中止。
 - 长路径：OSG 工作副本较深，池根应尽量短（如 `D:/osgpool`），README 中写明。

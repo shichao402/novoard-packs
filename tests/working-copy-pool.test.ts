@@ -28,7 +28,8 @@ import {
   type PoolState,
   type Slot,
 } from "../packs/workingCopyPool/src/state";
-import { parseInfoXml, parseStatusXml, relTo, sparseParents, summarizeStatus } from "../packs/workingCopyPool/src/svn";
+import { parseInfoXml, parseStatusXml, relTo, summarizeStatus } from "../packs/workingCopyPool/src/svn";
+import { captureSpec, describeSparse, formatSpecToml, FULL_SPARSE, SparsePlan, type SparseSpec } from "../packs/workingCopyPool/src/sparse";
 
 const NOW = new Date("2026-11-16T08:00:00.000Z");
 const BASE = `maxSlots = 3\nsvnRoot = "https://svn.example.com/osg"\n`;
@@ -55,7 +56,7 @@ describe("pool.toml 校验", () => {
       resident: [],
       branches: { pattern: "branches/{name}", listFrom: [], recentDays: 30 },
       aliases: {},
-      sparse: { exclude: [] },
+      sparse: FULL_SPARSE,
       patchRetentionDays: 30,
     });
   });
@@ -63,7 +64,13 @@ describe("pool.toml 校验", () => {
   it("规范化 exclude、去重 resident", () => {
     const c = config(`resident = ["s2pub", "s2pub"]\n[sparse]\nexclude = ["./Assets\\\\Art/", "Assets/Art"]\n`);
     expect(c.resident).toEqual(["s2pub"]);
-    expect(c.sparse.exclude).toEqual(["Assets/Art"]);
+    expect(c.sparse).toEqual({ root: "infinity", paths: { "Assets/Art": "exclude" } });
+  });
+
+  it("depth 映射表", () => {
+    const c = config(`[sparse]\nroot = "empty"\n\n[sparse.depth]\n"Code/" = "infinity"\n"Assets\\\\Art" = "files"\n`);
+    expect(c.sparse).toEqual({ root: "empty", paths: { Code: "infinity", "Assets/Art": "files" } });
+    expect(config(`[sparse.depth]\n"Res" = "exclude"\n`).sparse).toEqual({ root: "infinity", paths: { Res: "exclude" } });
   });
 
   it.each([
@@ -74,6 +81,12 @@ describe("pool.toml 校验", () => {
     [`${BASE}[branches]\npattern = "branches"\n`, /第 4 行 branches\.pattern：必须包含 \{name\}/],
     [`${BASE}[branches]\nlistfrom = []\n`, /第 4 行 branches\.listfrom：未知字段/],
     [`${BASE}\n[sparse]\nexclude = ["Assets/../x"]\n`, /第 5 行 sparse\.exclude：路径不合法/],
+    [`${BASE}[sparse]\nexclude = ["A"]\nroot = "empty"\n`, /sparse\.exclude：不能和 root/],
+    [`${BASE}[sparse]\nroot = "exclude"\n`, /第 4 行 sparse\.root：应为 empty/],
+    [`${BASE}[sparse.depth]\n"A" = "deep"\n`, /sparse\.depth\.A|sparse\.depth.*应为 exclude/],
+    [`${BASE}[sparse.depth]\n"A/../B" = "empty"\n`, /路径不合法：A\/\.\.\/B/],
+    [`${BASE}[sparse.depth]\n"A" = "empty"\n"A/" = "files"\n`, /冲突/],
+    [`${BASE}[sparse.depth]\n"A" = "exclude"\n"A/B" = "infinity"\n`, /A\/B 在已排除的 A 之下/],
     [`${BASE}resident = ["/abs"]\n`, /第 3 行 resident：分支名不合法/],
     [`svnRoot = "file:///r"\n`, /缺少 maxSlots/],
     [`maxSlots = 2\nsvnRoot = "file:///r"\nresident = [\n`, /pool\.toml 第 \d+ 行/],
@@ -314,8 +327,63 @@ describe("svn 输出解析", () => {
     expect(st.unversioned.map((x) => x.path)).toEqual(["n"]);
     expect(st.problems).toEqual(["冲突：c", "树冲突：t"]);
   });
+});
 
-  it("稀疏规划：被排除目录的各级父目录", () => {
-    expect([...sparseParents(["Assets/Art/Big", "Res"])].sort()).toEqual(["", "Assets", "Assets/Art"]);
+describe("稀疏规格", () => {
+  const whitelist: SparseSpec = { root: "empty", paths: { Code: "infinity", "Assets/Art/UI": "infinity", "Assets/Art/UI/Big": "exclude", Docs: "files" } };
+
+  it("继承：父目录 infinity 时子目录 infinity，否则 empty", () => {
+    const plan = new SparsePlan(whitelist);
+    expect(plan.depthOf("")).toBe("empty");
+    expect(plan.depthOf("Assets")).toBe("empty");
+    expect(plan.depthOf("Assets/Art/UI/Icons")).toBe("infinity");
+    expect(plan.depthOf("Assets/Art/UI/Big")).toBe("exclude");
+    expect(plan.depthOf("Docs/Sub")).toBe("empty");
+  });
+
+  it("展开节点与需要带下来的子目录", () => {
+    const plan = new SparsePlan(whitelist);
+    expect(plan.wcDepth("Assets/Art/UI", "infinity")).toBe("immediates");
+    expect(plan.wcDepth("Code", "infinity")).toBe("infinity");
+    expect(plan.satisfied("Assets/Art/UI", "infinity", "immediates")).toBe(true);
+    expect(plan.satisfied("Code", "infinity", "immediates")).toBe(false);
+    expect(plan.neededChildren("")).toEqual(["Assets", "Code", "Docs"]);
+    expect(plan.neededChildren("Assets/Art/UI")).toEqual([]);
+    expect(new SparsePlan({ root: "infinity", paths: { "A/B": "exclude" } }).neededChildren("")).toEqual(["A"]);
+  });
+
+  it("dry-run 文本", () => {
+    expect(describeSparse(FULL_SPARSE)).toEqual(["稀疏：不排除，完整检出"]);
+    expect(describeSparse(whitelist)).toEqual([
+      "稀疏：根目录 empty，未列出的目录从父目录继承",
+      "  exclude：Assets/Art/UI/Big",
+      "  files：Docs",
+      "  infinity：Assets/Art/UI、Code",
+      "  自动空壳（empty）：Assets、Assets/Art",
+    ]);
+  });
+
+  it("从工作副本导出最小规格", () => {
+    const spec = captureSpec([
+      { rel: "", depth: "empty" },
+      { rel: "Assets", depth: "empty" },
+      { rel: "Assets/Art", depth: "empty" },
+      { rel: "Assets/Art/UI", depth: "immediates" },
+      { rel: "Assets/Art/UI/Big", depth: "exclude" },
+      { rel: "Assets/Art/UI/Icons", depth: "infinity" },
+      { rel: "Assets/Art/UI/Icons/S", depth: "infinity" },
+      { rel: "Code", depth: "infinity" },
+      { rel: "Docs", depth: "files" },
+    ]);
+    expect(spec).toEqual(whitelist);
+    expect(captureSpec([{ rel: "", depth: "infinity" }, { rel: "A", depth: "infinity" }])).toEqual(FULL_SPARSE);
+    // 真 immediates：子目录以 empty 出现，不列出
+    expect(captureSpec([{ rel: "", depth: "immediates" }, { rel: "A", depth: "empty" }, { rel: "B", depth: "infinity" }])).toEqual({ root: "immediates", paths: { B: "infinity" } });
+  });
+
+  it("导出的 TOML 能被 pool.toml 解析回同一规格", () => {
+    const toml = formatSpecToml(whitelist);
+    expect(toml).toContain('"Assets/Art/UI/Big" = "exclude"');
+    expect(config(`\n${toml}`).sparse).toEqual(whitelist);
   });
 });

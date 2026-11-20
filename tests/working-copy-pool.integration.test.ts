@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ToolRunContext, ToolRunResult } from "../shared/types";
 import { run } from "../packs/workingCopyPool/src/index";
@@ -50,9 +51,9 @@ describe.skipIf(!hasSvn)("workingCopyPool 集成（svnadmin + file://）", () =>
   const state = (): PoolState => readState(poolPaths(poolRoot));
   const slot = (id: string): string => path.join(poolRoot, "slots", id);
   const link = (branch: string): string => path.join(poolRoot, "branch", branch);
-  const writeConfig = (extra: { maxSlots: number; resident?: string[] }): void => {
+  const writeConfig = (extra: { maxSlots: number; resident?: string[]; sparse?: string[]; root?: string }): void => {
     writeFileSync(
-      path.join(poolRoot, "pool.toml"),
+      path.join(extra.root ?? poolRoot, "pool.toml"),
       [
         `maxSlots = ${extra.maxSlots}`,
         `svnRoot = "${url}"`,
@@ -61,8 +62,7 @@ describe.skipIf(!hasSvn)("workingCopyPool 集成（svnadmin + file://）", () =>
         "[branches]",
         `listFrom = ["branches"]`,
         "",
-        "[sparse]",
-        `exclude = ["Assets/Art"]`,
+        ...(extra.sparse ?? ["[sparse]", `exclude = ["Assets/Art"]`]),
         "",
       ].join("\n"),
     );
@@ -84,7 +84,7 @@ describe.skipIf(!hasSvn)("workingCopyPool 集成（svnadmin + file://）", () =>
     base = realpathSync(mkdtempSync(path.join(os.tmpdir(), "wcp-it-")));
     const repo = path.join(base, "repo");
     sh("svnadmin", ["create", repo]);
-    url = `file://${repo}`;
+    url = pathToFileURL(repo).href;
     const seed = path.join(base, "seed");
     for (const [rel, text] of [
       ["Assets/a.txt", "a\n"],
@@ -115,8 +115,8 @@ describe.skipIf(!hasSvn)("workingCopyPool 集成（svnadmin + file://）", () =>
   it("dry-run 打印稀疏计划且不建池目录", async () => {
     const result = await run("acquire", { branch: "b1" }, { ...ctx(), dryRun: true });
     expect(result.detail).toMatch(/^dry-run: /);
-    expect(result.detail).toContain("排除 Assets/Art");
-    expect(result.detail).toContain("immediates）：(根)、Assets");
+    expect(result.detail).toContain("稀疏：根目录 infinity");
+    expect(result.detail).toContain("exclude：Assets/Art");
     expect(existsSync(path.join(poolRoot, ".pool"))).toBe(false);
   });
 
@@ -279,4 +279,65 @@ describe.skipIf(!hasSvn)("workingCopyPool 集成（svnadmin + file://）", () =>
     expect(state().slots.every((x) => !x.op)).toBe(true);
     expect(realpathSync(linkTarget(link("b1"))!)).toBe(slot("s02"));
   }, 120_000);
+
+  it("白名单：空壳 + 列出目录，切换不带下新顶层目录，导出与配置一致，改配置后重新应用", async () => {
+    const root = path.join(base, "pool-white");
+    mkdirSync(root);
+    const wctx = (): ToolRunContext => ({ ...ctx(), cwd: root, workspacePath: root });
+    const wcall = (tool: string, params: Record<string, unknown> = {}): Promise<ToolRunResult> => run(tool, params, wctx());
+    const wc = path.join(root, "slots", "s01");
+    const has = (rel: string): boolean => existsSync(path.join(wc, ...rel.split("/")));
+    const whitelist = ["[sparse]", `root = "empty"`, "", "[sparse.depth]", `"Code" = "infinity"`, `"Assets/Art/Sub" = "infinity"`, `"Missing/Dir" = "files"`];
+    writeConfig({ root, maxSlots: 1, sparse: whitelist });
+
+    const dry = await run("acquire", { branch: "b1" }, { ...wctx(), dryRun: true });
+    expect(dry.detail).toContain("自动空壳（empty）：Assets、Assets/Art、Missing");
+
+    const first = await wcall("acquire", { branch: "b1" });
+    expect(first.code).toBe(0);
+    expect(has("Code/main.cs")).toBe(true);
+    expect(has("Assets/Art/Sub/x.txt")).toBe(true);
+    expect(has("README.md")).toBe(false);
+    expect(has("Assets/a.txt")).toBe(false);
+    expect(has("Assets/Art/big.bin")).toBe(false);
+    expect(has("Missing")).toBe(false);
+
+    // b2 新增顶层目录和 Code 下的文件：切换后前者不下载，后者跟着 infinity 下来
+    commit("b2", "NewTop/n.txt", "n\n");
+    commit("b2", "Code/new.cs", "new\n");
+    await wcall("release", { branch: "b1" });
+    const switched = await wcall("acquire", { branch: "b2" });
+    expect(switched.summary).toMatch(/^b2 就绪（s01，切换/);
+    expect(has("Code/new.cs")).toBe(true);
+    expect(has("NewTop")).toBe(false);
+    expect(has("Assets/Art/Sub/x.txt")).toBe(true);
+    expect(has("Assets/a.txt")).toBe(false);
+
+    const captured = await run("capture-sparse", { path: wc }, { ...ctx(), cwd: base, workspacePath: base });
+    expect(captured.code).toBe(0);
+    const toml = captured.detail.slice(captured.detail.indexOf("[sparse]"));
+    expect(toml).toContain('root = "empty"');
+    expect(toml).toContain('"Assets/Art/Sub" = "infinity"');
+    expect(toml).toMatch(/"Code"\s+= "infinity"/);
+    expect(toml).not.toMatch(/"Assets" =/);
+    const capturedRun = await run("capture-sparse", { path: wc }, { ...ctx(), cwd: base, workspacePath: base, dryRun: true });
+    expect(capturedRun.detail).toContain("只读");
+
+    // 改成黑名单：根目录展开为完整检出，只排除 Assets/Art/Sub
+    await wcall("release", { branch: "b2" });
+    writeConfig({ root, maxSlots: 1, resident: ["b2"], sparse: ["[sparse]", `exclude = ["Assets/Art/Sub"]`] });
+    const black = await wcall("refresh");
+    expect(black.code).toBe(0);
+    expect(has("README.md")).toBe(true);
+    expect(has("NewTop/n.txt")).toBe(true);
+    expect(has("Assets/a.txt")).toBe(true);
+    expect(has("Assets/Art/big.bin")).toBe(true);
+    expect(has("Assets/Art/Sub")).toBe(false);
+
+    // 去掉 [sparse]：恢复完整检出
+    writeConfig({ root, maxSlots: 1, resident: ["b2"], sparse: [] });
+    const full = await wcall("refresh");
+    expect(full.code).toBe(0);
+    expect(has("Assets/Art/Sub/x.txt")).toBe(true);
+  }, 180_000);
 });

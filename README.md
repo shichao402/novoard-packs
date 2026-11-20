@@ -8,11 +8,11 @@ novoard-agent 的通用能力包。协议见 novoard-agent 仓 `docs/adr/0019-ca
 
 - `versionControl`：svn 更新、还原、清理、切换、复制、删除，以及 git 操作。
 - `general`：unity 预热、打开 Unity 工程（unity-open）、空闲退出（如 Rider）、释放占用进程。
-- `workingCopyPool`：工作副本池，按分支占用和释放 SVN 工作副本，见 [docs/prd/working-copy-pool.md](docs/prd/working-copy-pool.md)。查询工具 candidates、occupied、status（kind query），执行工具 acquire、release、gc、refresh。
+- `workingCopyPool`：工作副本池，按分支占用和释放 SVN 工作副本，见 [docs/prd/working-copy-pool.md](docs/prd/working-copy-pool.md)。查询工具 candidates、occupied、status（kind query），执行工具 acquire、release、gc、refresh，以及从现有工作副本导出稀疏配置的 capture-sparse。
 
 三个包放同一个仓库，是因为它们共用 svn 调用（`shared/svn-*`）和"哪个进程占着文件"的检测代码（`shared/occupants`）。这些代码在编译期分别打进各包，运行时互不依赖。
 
-workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`。Windows 上池根路径要尽量短（如 `D:/osgpool`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。
+workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`。Windows 上池根路径要尽量短（如 `D:/osgpool`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。稀疏检出用 `[sparse]` 的 `root` 加 `[sparse.depth]` 映射表，白名单、黑名单都能写；已有精简工程时先跑 `capture-sparse` 导出。
 
 ## 目录
 

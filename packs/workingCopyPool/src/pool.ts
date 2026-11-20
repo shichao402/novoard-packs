@@ -34,7 +34,8 @@ import {
   type Slot,
   type SlotOp,
 } from "./state";
-import { behindCount, Cancelled, isObstruction, reapplySparse, sparseCheckout, svn, svnBusy, svnInfo, svnStatus, SvnError, type SvnCtx } from "./svn";
+import { applySparse, behindCount, Cancelled, isObstruction, sparseCheckout, svn, svnBusy, svnInfo, svnStatus, SvnError, type SvnCtx } from "./svn";
+import { describeSparse, isFullCheckout } from "./sparse";
 
 export type Pool = {
   root: string;
@@ -267,9 +268,9 @@ async function recoverSlot(pool: Pool, id: string, op: SlotOp, branch: string): 
   const actual = branchFromUrl(pool.config, info.url) ?? "";
   const target = op.kind === "create" || op.kind === "switch" ? op.target : branch;
   let complete = Boolean(target) && sameUrl(info.url, branchUrl(pool.config, target!)) && !st.incomplete && !st.wcLocked;
-  if (complete && op.kind === "create" && pool.config.sparse.exclude.length > 0) {
+  if (complete && op.kind === "create" && !isFullCheckout(pool.config.sparse)) {
     // 新建可能停在逐层展开的中途：补齐深度
-    await reapplySparse(sctx, wc, pool.config.sparse.exclude);
+    await applySparse(sctx, wc, pool.config.sparse);
   }
   const done = await mutate(pool.paths, (state) => {
     const slot = findSlot(state, id);
@@ -453,7 +454,7 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
   try {
     stage(pool, `${claimed.id}：svn switch ${url}`);
     await svn(sctx, ["switch", "--ignore-ancestry", url, wc], { wc, progress: "切换" });
-    const sparse = await reapplySparse(sctx, wc, pool.config.sparse.exclude);
+    const sparse = await applySparse(sctx, wc, pool.config.sparse);
     if (sparse.length) notes.push(`稀疏：${sparse.join("；")}`);
     return await finishCheck(pool, wc, url);
   } catch (error) {
@@ -475,10 +476,10 @@ async function createFlow(pool: Pool, claimed: Slot, branch: string, url: string
   const wc = slotDir(pool.paths, claimed.id);
   const sctx = svnCtx(pool);
   if (existsSync(wc)) rmSync(wc, { recursive: true, force: true, maxRetries: 3 });
-  const exclude = pool.config.sparse.exclude;
-  stage(pool, `${claimed.id}：新建 ${branch}${exclude.length ? `（排除 ${exclude.join("、")}）` : ""}`);
+  const spec = pool.config.sparse;
+  stage(pool, `${claimed.id}：新建 ${branch}${isFullCheckout(spec) ? "" : `（${describeSparse(spec)[0]}）`}`);
   try {
-    await sparseCheckout(sctx, url, wc, exclude);
+    await sparseCheckout(sctx, url, wc, spec);
     notes.push(`新建槽位 ${claimed.id}`);
     return await finishCheck(pool, wc, url);
   } catch (error) {
@@ -751,7 +752,7 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
       releaseOccupants: true,
       onProgress: (message, percent) => pool.ctx.onProgress?.(`${branch}：${message}`, percent),
     });
-    const sparse = await reapplySparse(sctx, wc, pool.config.sparse.exclude);
+    const sparse = await applySparse(sctx, wc, pool.config.sparse);
     const behind = await behindCount(sctx, wc).catch(() => undefined);
     await mutate(pool.paths, (state) => {
       const slot = state.slots.find((s) => s.id === claim.slot.id);

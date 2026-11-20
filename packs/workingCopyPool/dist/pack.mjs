@@ -1123,13 +1123,164 @@ function parse(toml, options = {}) {
 // node_modules/smol-toml/dist/stringify.js
 var HAS_WELLFORMED = !!"".isWellFormed;
 
+// packs/workingCopyPool/src/sparse.ts
+var DEPTHS = ["exclude", "empty", "files", "immediates", "infinity"];
+function isDepth(value) {
+  return typeof value === "string" && DEPTHS.includes(value);
+}
+function isFullCheckout(spec) {
+  return spec.root === "infinity" && Object.keys(spec.paths).length === 0;
+}
+function specFromExclude(exclude) {
+  return { root: "infinity", paths: Object.fromEntries(exclude.map((p) => [p, "exclude"])) };
+}
+function parentOf(rel) {
+  const i = rel.lastIndexOf("/");
+  return i < 0 ? "" : rel.slice(0, i);
+}
+function joinRel(parent, name) {
+  return parent ? `${parent}/${name}` : name;
+}
+function specErrors(spec) {
+  const errors = [];
+  for (const rel of Object.keys(spec.paths)) {
+    for (let p = parentOf(rel); p; p = parentOf(p)) {
+      if (spec.paths[p] === "exclude") {
+        errors.push(`${rel} \u5728\u5DF2\u6392\u9664\u7684 ${p} \u4E4B\u4E0B`);
+        break;
+      }
+    }
+  }
+  return errors;
+}
+var SparsePlan = class {
+  constructor(spec) {
+    this.spec = spec;
+    for (const rel of Object.keys(spec.paths)) {
+      for (let p = parentOf(rel); ; p = parentOf(p)) {
+        this.ancestors.add(p);
+        if (!p) break;
+      }
+    }
+  }
+  ancestors = /* @__PURE__ */ new Set();
+  /** 下面还有列出的路径。 */
+  hasDescendants(rel) {
+    return this.ancestors.has(rel);
+  }
+  /** 有效 depth：列出的取列出值，否则从父目录有效 depth 继承（根取 root）。 */
+  depthOf(rel, parentDepth) {
+    if (!rel) return this.spec.root;
+    const own = this.spec.paths[rel];
+    if (own) return own;
+    const parent = parentDepth ?? this.depthOf(parentOf(rel));
+    return parent === "infinity" ? "infinity" : "empty";
+  }
+  /**
+   * 这个目录在工作副本里该设的 depth：infinity 且下面还有列出的路径时用 immediates 展开，
+   * 子目录再逐个设置；其余就是有效 depth。
+   */
+  wcDepth(rel, depth) {
+    return depth === "infinity" && this.hasDescendants(rel) ? "immediates" : depth;
+  }
+  /** 目录当前 depth 是否已满足规划（infinity 展开节点 immediates 或 infinity 都算满足）。 */
+  satisfied(rel, depth, current) {
+    if (depth === "infinity" && this.hasDescendants(rel)) return current === "immediates" || current === "infinity";
+    return current === depth;
+  }
+  /**
+   * 父目录有效 depth 不是 infinity 时，需要显式带下来的直接子目录名（列出的或其祖先），
+   * 不含 exclude（不在磁盘上即满足）。
+   */
+  neededChildren(rel) {
+    const out = /* @__PURE__ */ new Set();
+    const prefix = rel ? `${rel}/` : "";
+    const consider = (p) => {
+      if (!p.startsWith(prefix) || p === rel) return;
+      const name = p.slice(prefix.length).split("/")[0];
+      const child = joinRel(rel, name);
+      if (child === p && this.spec.paths[p] === "exclude") return;
+      out.add(name);
+    };
+    for (const p of Object.keys(this.spec.paths)) consider(p);
+    return [...out].sort();
+  }
+};
+function describeSparse(spec) {
+  if (isFullCheckout(spec)) return ["\u7A00\u758F\uFF1A\u4E0D\u6392\u9664\uFF0C\u5B8C\u6574\u68C0\u51FA"];
+  const entries = Object.entries(spec.paths).sort(([a], [b]) => a.localeCompare(b));
+  const group = (depth) => entries.filter(([, d]) => d === depth).map(([p]) => p);
+  const lines = [`\u7A00\u758F\uFF1A\u6839\u76EE\u5F55 ${spec.root}\uFF0C\u672A\u5217\u51FA\u7684\u76EE\u5F55\u4ECE\u7236\u76EE\u5F55\u7EE7\u627F`];
+  for (const depth of DEPTHS) {
+    const items = group(depth);
+    if (items.length) lines.push(`  ${depth}\uFF1A${items.join("\u3001")}`);
+  }
+  const plan = new SparsePlan(spec);
+  const shells = [...new Set(Object.keys(spec.paths).flatMap((p) => ancestorsOf(p)))].filter((p) => !(p in spec.paths) && plan.depthOf(p) !== "infinity").sort();
+  if (shells.length) lines.push(`  \u81EA\u52A8\u7A7A\u58F3\uFF08empty\uFF09\uFF1A${shells.join("\u3001")}`);
+  return lines;
+}
+function ancestorsOf(rel) {
+  const out = [];
+  for (let p = parentOf(rel); p; p = parentOf(p)) out.push(p);
+  return out;
+}
+function captureSpec(dirs) {
+  const actual = new Map(dirs.map((d) => [d.rel, d.depth]));
+  const children = /* @__PURE__ */ new Map();
+  for (const { rel } of dirs) {
+    if (!rel) continue;
+    const parent = parentOf(rel);
+    children.set(parent, [...children.get(parent) ?? [], rel]);
+  }
+  const effective = /* @__PURE__ */ new Map();
+  for (const rel of [...actual.keys()].sort((a, b) => a.split("/").length - b.split("/").length)) {
+    let depth = actual.get(rel);
+    if (depth === "immediates") {
+      const kids = children.get(rel) ?? [];
+      if (!kids.some((k) => actual.get(k) === "empty")) depth = "infinity";
+    }
+    effective.set(rel, depth);
+  }
+  const rootDepth = effective.get("") ?? "infinity";
+  const root = rootDepth === "exclude" ? "infinity" : rootDepth;
+  const listed = /* @__PURE__ */ new Map();
+  for (const [rel, depth] of effective) {
+    if (!rel) continue;
+    const parent = effective.get(parentOf(rel)) ?? root;
+    if (parent === "infinity" && depth === "infinity") continue;
+    if (parent === "immediates" && depth === "empty") continue;
+    listed.set(rel, depth);
+  }
+  for (const [rel, depth] of [...listed]) {
+    if (depth !== "empty") continue;
+    const parent = effective.get(parentOf(rel)) ?? root;
+    if (parent === "infinity") continue;
+    const prefix = `${rel}/`;
+    if ([...listed.keys()].some((p) => p.startsWith(prefix))) listed.delete(rel);
+  }
+  const paths = Object.fromEntries([...listed].sort(([a], [b]) => a.localeCompare(b)));
+  return { root, paths };
+}
+function formatSpecToml(spec) {
+  const lines = ["[sparse]", `root = "${spec.root}"`];
+  const entries = Object.entries(spec.paths);
+  if (entries.length) {
+    lines.push("", "[sparse.depth]");
+    const width = Math.max(...entries.map(([p]) => JSON.stringify(p).length));
+    for (const [p, d] of entries) lines.push(`${JSON.stringify(p).padEnd(width)} = "${d}"`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+
 // packs/workingCopyPool/src/config.ts
 var ConfigError = class extends UsageError {
 };
 var CONFIG_FILE = "pool.toml";
 var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays"]);
 var BRANCH_KEYS = /* @__PURE__ */ new Set(["pattern", "listFrom", "recentDays"]);
-var SPARSE_KEYS = /* @__PURE__ */ new Set(["exclude"]);
+var SPARSE_KEYS = /* @__PURE__ */ new Set(["exclude", "root", "depth"]);
 var TTL_RE = /^(\d+)(m|h|d|w)$/;
 function isTtl(value) {
   return value === "forever" || TTL_RE.test(value) && Number(value.match(TTL_RE)[1]) > 0;
@@ -1233,10 +1384,7 @@ function parseConfig(text) {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
   const s = table("sparse", SPARSE_KEYS);
-  const exclude = strList("sparse", "exclude", s.exclude).map((p) => p.replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, ""));
-  for (const item of exclude) {
-    if (item === "" || item.split("/").some((part) => part === ".." || part === ".")) fail("sparse", "exclude", `\u8DEF\u5F84\u4E0D\u5408\u6CD5\uFF1A${item}`);
-  }
+  const sparse = parseSparse(s, fail, strList);
   for (const name of resident) {
     if (!isBranchName(name)) fail("", "resident", `\u5206\u652F\u540D\u4E0D\u5408\u6CD5\uFF1A${name}`);
   }
@@ -1247,9 +1395,55 @@ function parseConfig(text) {
     resident: [...new Set(resident)],
     branches: { pattern, listFrom, recentDays },
     aliases,
-    sparse: { exclude: [...new Set(exclude)] },
+    sparse,
     patchRetentionDays
   };
+}
+function normalizeRel(raw) {
+  const p = raw.trim().replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, "");
+  if (p === "" || p.split("/").some((part) => part === "" || part === ".." || part === ".")) return void 0;
+  return p;
+}
+function parseSparse(s, fail, strList) {
+  const hasNew = s.root !== void 0 || s.depth !== void 0;
+  if (s.exclude !== void 0 && hasNew) fail("sparse", "exclude", '\u4E0D\u80FD\u548C root / [sparse.depth] \u540C\u65F6\u4F7F\u7528\uFF1B\u767D\u540D\u5355\u5199\u6CD5\u91CC\u7528 "\u8DEF\u5F84" = "exclude"');
+  if (s.exclude !== void 0) {
+    const exclude = [];
+    for (const item of strList("sparse", "exclude", s.exclude)) {
+      const p = normalizeRel(item);
+      if (!p) fail("sparse", "exclude", `\u8DEF\u5F84\u4E0D\u5408\u6CD5\uFF1A${item}`);
+      exclude.push(p);
+    }
+    const spec2 = specFromExclude([...new Set(exclude)]);
+    const errors = specErrors(spec2);
+    if (errors.length) fail("sparse", "exclude", errors[0]);
+    return spec2;
+  }
+  const depthChoices = `${DEPTHS.join(" / ")}`;
+  let root = "infinity";
+  if (s.root !== void 0) {
+    if (!isDepth(s.root) || s.root === "exclude") fail("sparse", "root", `\u5E94\u4E3A ${DEPTHS.filter((d) => d !== "exclude").join(" / ")}`);
+    root = s.root;
+  }
+  const paths = {};
+  if (s.depth !== void 0) {
+    const d = s.depth;
+    if (!d || typeof d !== "object" || Array.isArray(d) || d instanceof Date) fail("sparse", "depth", "\u5E94\u4E3A\u8868\uFF08[sparse.depth]\uFF09");
+    for (const [key, value] of Object.entries(d)) {
+      const p = normalizeRel(key);
+      if (!p) fail("sparse.depth", key, `\u8DEF\u5F84\u4E0D\u5408\u6CD5\uFF1A${key}`);
+      if (!isDepth(value)) fail("sparse.depth", key, `\u5E94\u4E3A ${depthChoices}`);
+      if (p in paths && paths[p] !== value) fail("sparse.depth", key, `\u4E0E\u540C\u4E00\u8DEF\u5F84\u7684\u53E6\u4E00\u6761\u5199\u6CD5\u51B2\u7A81`);
+      paths[p] = value;
+    }
+  }
+  const spec = { root, paths };
+  for (const error of specErrors(spec)) {
+    const rel = error.split(" ")[0];
+    const key = Object.keys(s.depth ?? {}).find((k) => normalizeRel(k) === rel);
+    fail("sparse.depth", key, error);
+  }
+  return spec;
 }
 function configPath(root) {
   return path2.join(root, CONFIG_FILE);
@@ -1372,17 +1566,27 @@ var refresh = {
   supportsDryRun: true,
   supportsResultJson: true
 };
+var captureSparse = {
+  id: "capture-sparse",
+  displayName: "\u5BFC\u51FA\u7A00\u758F\u914D\u7F6E",
+  description: "\u8BFB\u53D6\u73B0\u6709\u5DE5\u4F5C\u526F\u672C\u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA\u53EF\u8D34\u8FDB pool.toml \u7684\u6700\u5C0F [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB\uFF0C\u4E0D\u9700\u8981 pool.toml",
+  kind: "action",
+  idempotent: true,
+  supportsDryRun: true,
+  supportsResultJson: true,
+  params: [{ name: "path", type: "string", required: true, label: "\u5DE5\u4F5C\u526F\u672C", description: "\u73B0\u6709\u5DE5\u4F5C\u526F\u672C\u76EE\u5F55\uFF0C\u76F8\u5BF9\u8DEF\u5F84\u6309 cwd \u89E3\u6790" }]
+};
 var manifest = {
   id: "workingCopyPool",
   displayName: "\u5DE5\u4F5C\u526F\u672C\u6C60",
   schemaVersion: 1,
   runtime: "node",
   entry: "dist/pack.mjs",
-  tools: [candidates, occupied, status, acquire, release, gc, refresh]
+  tools: [candidates, occupied, status, acquire, release, gc, refresh, captureSparse]
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync8, readdirSync as readdirSync2, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync8, readdirSync, rmSync as rmSync3, statSync as statSync3 } from "node:fs";
 import path11 from "node:path";
 
 // shared/occupants.ts
@@ -2440,7 +2644,7 @@ function tail(text) {
 }
 
 // packs/workingCopyPool/src/archive.ts
-import { copyFileSync, existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync6, readlinkSync, rmSync as rmSync2, statSync as statSync3, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "node:fs";
+import { copyFileSync, existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync6, readlinkSync, rmSync as rmSync2, statSync as statSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "node:fs";
 import path10 from "node:path";
 
 // packs/workingCopyPool/src/state.ts
@@ -2620,7 +2824,7 @@ function recentBranches(paths, limit = 20) {
 }
 
 // packs/workingCopyPool/src/svn.ts
-import { existsSync as existsSync6, readdirSync, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync6 } from "node:fs";
 import path9 from "node:path";
 var SvnError = class extends Error {
   constructor(message, output) {
@@ -2641,7 +2845,7 @@ async function svn(ctx, args, options = {}) {
     logFile: ctx.logFile,
     abortSignal: ctx.abortSignal,
     gracefulMs: SVN_GRACEFUL_MS,
-    onStdoutLine: counter?.line
+    onStdoutLine: options.onLine ?? counter?.line
   }).done;
   if (result.cancelled) {
     const note = options.wc && existsSync6(path9.join(options.wc, ".svn")) ? await cleanupAfterInterrupt(args, { cwd: options.wc, logFile: ctx.logFile }) : "";
@@ -2751,94 +2955,114 @@ function relTo(wc, p, cwd) {
 function isObstruction(text) {
   return /E155000|E155037|E195016|obstruct|tree conflict|树冲突|阻碍/i.test(text);
 }
-function sparseParents(exclude) {
-  const parents = /* @__PURE__ */ new Set();
-  for (const item of exclude) {
-    const parts = item.split("/");
-    for (let i = 0; i < parts.length; i++) parents.add(parts.slice(0, i).join("/"));
-  }
-  return parents;
-}
-function localChildDirs(dir) {
-  if (!existsSync6(dir)) return [];
-  return readdirSync(dir).filter((name) => name !== ".svn").filter((name) => {
-    try {
-      return statSync2(path9.join(dir, name)).isDirectory();
-    } catch {
-      return false;
-    }
-  }).sort();
-}
 function abs(wc, rel) {
   return rel ? path9.join(wc, ...rel.split("/")) : wc;
 }
-async function setDepth(ctx, wc, depth, rels, label) {
+var DEPTH_LABEL = { exclude: "\u6392\u9664", empty: "\u7A7A\u58F3", files: "\u68C0\u51FA", immediates: "\u5C55\u5F00", infinity: "\u68C0\u51FA" };
+async function setDepth(ctx, wc, depth, rels) {
   for (let i = 0; i < rels.length; i += 50) {
     const batch = rels.slice(i, i + 50).map((rel) => abs(wc, rel));
-    await svn(ctx, ["update", "--set-depth", depth, ...batch], { wc, progress: label });
+    await svn(ctx, ["update", "--set-depth", depth, ...batch], { wc, progress: DEPTH_LABEL[depth] });
   }
 }
-async function sparseCheckout(ctx, url, wc, exclude) {
-  if (exclude.length === 0) {
+async function sparseCheckout(ctx, url, wc, spec) {
+  if (isFullCheckout(spec)) {
     await svn(ctx, ["checkout", url, wc], { wc, progress: "\u68C0\u51FA" });
     return;
   }
-  await svn(ctx, ["checkout", "--depth", "empty", url, wc], { wc });
-  await expandLevel(ctx, wc, "", new Set(exclude), sparseParents(exclude));
+  const plan = new SparsePlan(spec);
+  await svn(ctx, ["checkout", "--depth", plan.wcDepth("", spec.root), url, wc], { wc, progress: "\u68C0\u51FA" });
+  await applySparse(ctx, wc, spec);
 }
-async function expandLevel(ctx, wc, rel, exclude, parents) {
-  await svn(ctx, ["update", "--set-depth", "immediates", abs(wc, rel)], { wc });
-  const toExclude = [];
-  const toFull = [];
-  const toRecurse = [];
-  for (const name of localChildDirs(abs(wc, rel))) {
-    const child = rel ? `${rel}/${name}` : name;
-    if (exclude.has(child)) toExclude.push(child);
-    else if (parents.has(child)) toRecurse.push(child);
-    else toFull.push(child);
-  }
-  if (toExclude.length) await setDepth(ctx, wc, "exclude", toExclude, "\u6392\u9664");
-  if (toFull.length) await setDepth(ctx, wc, "infinity", toFull, "\u68C0\u51FA");
-  for (const child of toRecurse) await expandLevel(ctx, wc, child, exclude, parents);
-}
-async function reapplySparse(ctx, wc, exclude) {
-  if (exclude.length === 0) return [];
-  const excludeSet = new Set(exclude);
-  const parents = sparseParents(exclude);
+async function applySparse(ctx, wc, spec) {
+  const plan = new SparsePlan(spec);
   const notes = [];
-  const walk = async (rel) => {
+  const missing = [];
+  const readLevel = async (rel) => {
     const result = await svn(ctx, ["info", "--xml", "--depth", "immediates", abs(wc, rel)], { allowFail: true });
-    if (result.code !== 0) return;
-    const entries = parseInfoXml(result.stdout);
-    const self = entries.find((e) => relTo(wc, e.path, ctx.cwd) === (rel || "."));
-    if (self && self.depth !== "immediates" && self.depth !== "infinity") {
-      await svn(ctx, ["update", "--set-depth", "immediates", abs(wc, rel)], { wc });
-      notes.push(`\u5C55\u5F00 ${rel || "."}`);
-      return walk(rel);
+    if (result.code !== 0) return void 0;
+    const children = /* @__PURE__ */ new Map();
+    let self;
+    for (const entry of parseInfoXml(result.stdout)) {
+      const r = relTo(wc, entry.path, ctx.cwd);
+      if (r === (rel || ".")) self = entry;
+      else if (entry.kind === "dir") children.set(r, entry);
     }
-    const toExclude = [];
-    const toFull = [];
-    const toRecurse = [];
-    for (const entry of entries) {
-      const child = relTo(wc, entry.path, ctx.cwd);
-      if (child === (rel || ".") || entry.kind !== "dir") continue;
-      if (entry.depth === "exclude") continue;
-      if (excludeSet.has(child)) toExclude.push(child);
-      else if (parents.has(child)) toRecurse.push(child);
-      else if (entry.depth && entry.depth !== "infinity") toFull.push(child);
-    }
-    if (toExclude.length) {
-      await setDepth(ctx, wc, "exclude", toExclude, "\u6392\u9664");
-      notes.push(`\u6392\u9664 ${toExclude.join("\u3001")}`);
-    }
-    if (toFull.length) {
-      await setDepth(ctx, wc, "infinity", toFull, "\u68C0\u51FA");
-      notes.push(`\u8865\u5168 ${toFull.join("\u3001")}`);
-    }
-    for (const child of toRecurse) await walk(child);
+    return { self, children };
   };
-  await walk("");
+  const walk = async (rel, depth) => {
+    let level = await readLevel(rel);
+    if (!level?.self) return;
+    if (!plan.satisfied(rel, depth, level.self.depth)) {
+      const target = plan.wcDepth(rel, depth);
+      await setDepth(ctx, wc, target, [rel]);
+      notes.push(`${rel || "(\u6839)"} \u8BBE\u4E3A ${target}`);
+      level = await readLevel(rel);
+      if (!level?.self) return;
+    }
+    if (!plan.hasDescendants(rel)) return;
+    const buckets = /* @__PURE__ */ new Map();
+    const push = (d, child) => void buckets.set(d, [...buckets.get(d) ?? [], child]);
+    const recurse = [];
+    const needed = new Set(plan.neededChildren(rel).map((name) => joinRel(rel, name)));
+    const shellParent = depth !== "infinity";
+    for (const [child, entry] of level.children) {
+      let d = plan.depthOf(child, depth);
+      if (shellParent && !needed.has(child) && !(child in spec.paths) && depth !== "immediates") d = "exclude";
+      if (d === "exclude") {
+        if (entry.depth !== "exclude") push("exclude", child);
+        continue;
+      }
+      if (plan.hasDescendants(child)) {
+        recurse.push([child, d]);
+        continue;
+      }
+      if (entry.depth !== d) push(d, child);
+    }
+    const toAdd = [];
+    for (const child of needed) {
+      if (level.children.has(child)) continue;
+      const d = plan.depthOf(child, depth);
+      if (d === "exclude") continue;
+      if (depth === "infinity" || depth === "immediates" || level.self.depth === "infinity" || level.self.depth === "immediates") {
+        missing.push(child);
+        continue;
+      }
+      toAdd.push([child, d]);
+    }
+    const order = ["exclude", "empty", "files", "immediates", "infinity"];
+    for (const d of order) {
+      const items = buckets.get(d);
+      if (!items?.length) continue;
+      await setDepth(ctx, wc, d, items);
+      notes.push(`${DEPTH_LABEL[d]}\uFF08${d}\uFF09${items.join("\u3001")}`);
+    }
+    for (const [child, d] of toAdd) {
+      await setDepth(ctx, wc, plan.wcDepth(child, d), [child]);
+      if (!existsSync6(abs(wc, child))) {
+        missing.push(child);
+        continue;
+      }
+      if (plan.hasDescendants(child)) recurse.push([child, d]);
+      else notes.push(`${DEPTH_LABEL[d]}\uFF08${d}\uFF09${child}`);
+    }
+    for (const [child, d] of recurse) await walk(child, d);
+  };
+  await walk("", spec.root);
+  if (missing.length) notes.push(`\u5206\u652F\u4E0A\u6CA1\u6709\uFF0C\u5DF2\u8DF3\u8FC7\uFF1A${missing.join("\u3001")}`);
   return notes;
+}
+async function readDirDepths(ctx, wc) {
+  const dirs = [];
+  await svn(ctx, ["info", "-R", "--show-item", "depth", wc], {
+    onLine: (line) => {
+      const match = /^(\S+)\s+(.+)$/.exec(line);
+      if (!match || !isDepth(match[1])) return;
+      const rel = relTo(wc, match[2].trim(), ctx.cwd);
+      dirs.push({ rel: rel === "." ? "" : rel, depth: match[1] });
+    }
+  });
+  return dirs;
 }
 async function behindCount(ctx, wc) {
   const local = await svnInfo(ctx, wc);
@@ -2894,7 +3118,7 @@ async function archiveChanges(ctx, paths, wc, branch, now, status3) {
       if (it.item !== "modified" && it.item !== "added" && it.item !== "replaced") continue;
       const from = path10.join(wc, ...it.path.split("/"));
       try {
-        if (!statSync3(from).isFile()) continue;
+        if (!statSync2(from).isFile()) continue;
       } catch {
         continue;
       }
@@ -3168,8 +3392,8 @@ async function recoverSlot(pool, id, op, branch) {
   const actual = branchFromUrl(pool.config, info.url) ?? "";
   const target = op.kind === "create" || op.kind === "switch" ? op.target : branch;
   let complete = Boolean(target) && sameUrl(info.url, branchUrl(pool.config, target)) && !st.incomplete && !st.wcLocked;
-  if (complete && op.kind === "create" && pool.config.sparse.exclude.length > 0) {
-    await reapplySparse(sctx, wc, pool.config.sparse.exclude);
+  if (complete && op.kind === "create" && !isFullCheckout(pool.config.sparse)) {
+    await applySparse(sctx, wc, pool.config.sparse);
   }
   const done = await mutate(pool.paths, (state) => {
     const slot = findSlot(state, id);
@@ -3318,7 +3542,7 @@ async function switchFlow(pool, claimed, branch, url, notes) {
   try {
     stage(pool, `${claimed.id}\uFF1Asvn switch ${url}`);
     await svn(sctx, ["switch", "--ignore-ancestry", url, wc], { wc, progress: "\u5207\u6362" });
-    const sparse = await reapplySparse(sctx, wc, pool.config.sparse.exclude);
+    const sparse = await applySparse(sctx, wc, pool.config.sparse);
     if (sparse.length) notes.push(`\u7A00\u758F\uFF1A${sparse.join("\uFF1B")}`);
     return await finishCheck(pool, wc, url);
   } catch (error) {
@@ -3340,10 +3564,10 @@ async function createFlow(pool, claimed, branch, url, notes) {
   const wc = slotDir(pool.paths, claimed.id);
   const sctx = svnCtx(pool);
   if (existsSync8(wc)) rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
-  const exclude = pool.config.sparse.exclude;
-  stage(pool, `${claimed.id}\uFF1A\u65B0\u5EFA ${branch}${exclude.length ? `\uFF08\u6392\u9664 ${exclude.join("\u3001")}\uFF09` : ""}`);
+  const spec = pool.config.sparse;
+  stage(pool, `${claimed.id}\uFF1A\u65B0\u5EFA ${branch}${isFullCheckout(spec) ? "" : `\uFF08${describeSparse(spec)[0]}\uFF09`}`);
   try {
-    await sparseCheckout(sctx, url, wc, exclude);
+    await sparseCheckout(sctx, url, wc, spec);
     notes.push(`\u65B0\u5EFA\u69FD\u4F4D ${claimed.id}`);
     return await finishCheck(pool, wc, url);
   } catch (error) {
@@ -3482,7 +3706,7 @@ function syncLinks(pool) {
   }
   const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s.id)));
   if (existsSync8(pool.paths.branch)) {
-    for (const name of readdirSync2(pool.paths.branch)) {
+    for (const name of readdirSync(pool.paths.branch)) {
       const link = path11.join(pool.paths.branch, name);
       if (!isLink(link)) continue;
       const target = linkTarget(link);
@@ -3514,13 +3738,13 @@ function prunePatches(pool) {
   const cutoff = pool.now().getTime() - pool.config.patchRetentionDays * 864e5;
   let removed = 0;
   if (!existsSync8(pool.paths.patches)) return 0;
-  for (const branch of readdirSync2(pool.paths.patches)) {
+  for (const branch of readdirSync(pool.paths.patches)) {
     const dir = path11.join(pool.paths.patches, branch);
-    if (!statSync4(dir).isDirectory()) continue;
-    for (const stamp of readdirSync2(dir)) {
+    if (!statSync3(dir).isDirectory()) continue;
+    for (const stamp of readdirSync(dir)) {
       const entry = path11.join(dir, stamp);
       try {
-        if (statSync4(entry).mtimeMs < cutoff) {
+        if (statSync3(entry).mtimeMs < cutoff) {
           rmSync3(entry, { recursive: true, force: true });
           removed += 1;
         }
@@ -3528,7 +3752,7 @@ function prunePatches(pool) {
       }
     }
     try {
-      if (readdirSync2(dir).length === 0) rmSync3(dir, { recursive: true, force: true });
+      if (readdirSync(dir).length === 0) rmSync3(dir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -3585,7 +3809,7 @@ async function refreshOne(pool, branch) {
       releaseOccupants: true,
       onProgress: (message, percent) => pool.ctx.onProgress?.(`${branch}\uFF1A${message}`, percent)
     });
-    const sparse = await reapplySparse(sctx, wc, pool.config.sparse.exclude);
+    const sparse = await applySparse(sctx, wc, pool.config.sparse);
     const behind = await behindCount(sctx, wc).catch(() => void 0);
     await mutate(pool.paths, (state) => {
       const slot = state.slots.find((s) => s.id === claim.slot.id);
@@ -3845,6 +4069,8 @@ async function run(toolId, rawParams, ctx) {
       return runGc(ctx);
     case "refresh":
       return runRefresh(ctx);
+    case "capture-sparse":
+      return runCaptureSparse(params, ctx);
     default:
       throw new UsageError(`\u672A\u5B9E\u73B0\u5DE5\u5177: ${toolId}`);
   }
@@ -3894,8 +4120,22 @@ async function runRefresh(ctx) {
   const summary = `\u5E38\u9A7B ${result.items.length} \u4E2A\uFF1A\u6210\u529F ${result.items.filter((i) => i.ok && !i.skipped).length}\uFF0C\u8DF3\u8FC7 ${result.items.filter((i) => i.skipped).length}\uFF0C\u5931\u8D25 ${failed.length}`;
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
+async function runCaptureSparse(params, ctx) {
+  const wc = path13.resolve(ctx.cwd, String(params.path));
+  const sctx = { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, logFile: ctx.logFile, abortSignal: ctx.abortSignal, onProgress: ctx.onProgress };
+  const info = await svnInfo(sctx, wc);
+  if (!info) throw new UsageError(`\u4E0D\u662F svn \u5DE5\u4F5C\u526F\u672C\uFF1A${wc}`);
+  ctx.onProgress?.("\u8BFB\u53D6\u76EE\u5F55 depth");
+  const dirs = await readDirDepths(sctx, wc);
+  const spec = captureSpec(dirs);
+  const count = Object.keys(spec.paths).length;
+  const summary = `\u5BFC\u51FA ${count} \u6761\u7A00\u758F\u89C4\u5219\uFF08\u6839\u76EE\u5F55 ${spec.root}\uFF0C\u5171 ${dirs.length} \u4E2A\u76EE\u5F55\uFF09`;
+  return { detail: [summary, `\u5DE5\u4F5C\u526F\u672C\uFF1A${wc}`, "", formatSpecToml(spec).trimEnd()].join("\n"), code: 0, summary };
+}
 function dryRun(displayName, toolId, params, ctx) {
   const head = `dry-run: ${displayName} ${JSON.stringify(params)}`;
+  if (toolId === "capture-sparse") return `${head}
+\u8BFB\u53D6 ${path13.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
   const root = path13.resolve(ctx.cwd);
   if (!existsSync10(path13.join(root, CONFIG_FILE))) return head;
   const config = loadConfig(root);
@@ -3913,10 +4153,7 @@ function dryRun(displayName, toolId, params, ctx) {
   return lines.join("\n");
 }
 function sparsePlan(config) {
-  const exclude = config.sparse.exclude;
-  if (exclude.length === 0) return ["\u7A00\u758F\uFF1A\u4E0D\u6392\u9664\uFF0C\u5B8C\u6574\u68C0\u51FA"];
-  const parents = [...sparseParents(exclude)].map((p) => p || "(\u6839)");
-  return [`\u7A00\u758F\uFF1A\u6392\u9664 ${exclude.join("\u3001")}`, `  \u9010\u5C42\u5C55\u5F00\uFF08immediates\uFF09\uFF1A${parents.join("\u3001")}`, "  \u5176\u4F59\u76EE\u5F55\u5B8C\u6574\u68C0\u51FA\uFF08infinity\uFF09"];
+  return describeSparse(config.sparse);
 }
 if (isCliEntry(import.meta.url)) {
   await main(manifest, run);

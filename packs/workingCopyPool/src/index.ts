@@ -12,7 +12,8 @@ import { manifest } from "./manifest";
 import { acquireSummary, gc, obtain, openPool, poolView, recover, refresh, releaseBranch, resolveLease } from "./pool";
 import { candidates, occupied, peekPool, status } from "./queries";
 import { readState } from "./state";
-import { sparseParents } from "./svn";
+import { captureSpec, describeSparse, formatSpecToml } from "./sparse";
+import { readDirDepths, svnInfo } from "./svn";
 
 export { manifest };
 
@@ -53,6 +54,8 @@ export async function run(toolId: string, rawParams: Record<string, unknown> | u
       return runGc(ctx);
     case "refresh":
       return runRefresh(ctx);
+    case "capture-sparse":
+      return runCaptureSparse(params, ctx);
     default:
       throw new UsageError(`未实现工具: ${toolId}`);
   }
@@ -106,6 +109,23 @@ async function runRefresh(ctx: ToolRunContext): Promise<ToolRunResult> {
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
 
+/**
+ * 从现有工作副本导出最小稀疏配置：读各目录实际 depth，只保留跟继承结果不一致的条目。
+ * 只读，不需要 pool.toml；相对路径按 cwd 解析。
+ */
+async function runCaptureSparse(params: Record<string, unknown>, ctx: ToolRunContext): Promise<ToolRunResult> {
+  const wc = path.resolve(ctx.cwd, String(params.path));
+  const sctx = { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, logFile: ctx.logFile, abortSignal: ctx.abortSignal, onProgress: ctx.onProgress };
+  const info = await svnInfo(sctx, wc);
+  if (!info) throw new UsageError(`不是 svn 工作副本：${wc}`);
+  ctx.onProgress?.("读取目录 depth");
+  const dirs = await readDirDepths(sctx, wc);
+  const spec = captureSpec(dirs);
+  const count = Object.keys(spec.paths).length;
+  const summary = `导出 ${count} 条稀疏规则（根目录 ${spec.root}，共 ${dirs.length} 个目录）`;
+  return { detail: [summary, `工作副本：${wc}`, "", formatSpecToml(spec).trimEnd()].join("\n"), code: 0, summary };
+}
+
 // ---------------------------------------------------------------- dry-run
 
 /**
@@ -114,6 +134,7 @@ async function runRefresh(ctx: ToolRunContext): Promise<ToolRunResult> {
  */
 function dryRun(displayName: string, toolId: string, params: Record<string, unknown>, ctx: ToolRunContext): string {
   const head = `dry-run: ${displayName} ${JSON.stringify(params)}`;
+  if (toolId === "capture-sparse") return `${head}\n读取 ${path.resolve(ctx.cwd, String(params.path))} 各目录的 depth，导出 [sparse] 配置；只读`;
   const root = path.resolve(ctx.cwd);
   if (!existsSync(path.join(root, CONFIG_FILE))) return head;
   const config = loadConfig(root);
@@ -132,10 +153,7 @@ function dryRun(displayName: string, toolId: string, params: Record<string, unkn
 }
 
 export function sparsePlan(config: PoolConfig): string[] {
-  const exclude = config.sparse.exclude;
-  if (exclude.length === 0) return ["稀疏：不排除，完整检出"];
-  const parents = [...sparseParents(exclude)].map((p) => p || "(根)");
-  return [`稀疏：排除 ${exclude.join("、")}`, `  逐层展开（immediates）：${parents.join("、")}`, "  其余目录完整检出（infinity）"];
+  return describeSparse(config.sparse);
 }
 
 if (isCliEntry(import.meta.url)) {

@@ -95,6 +95,24 @@
       "idempotent": true,
       "supportsDryRun": true,
       "supportsResultJson": true
+    },
+    {
+      "id": "capture-sparse",
+      "displayName": "导出稀疏配置",
+      "description": "读取现有工作副本各目录的 depth，导出可贴进 pool.toml 的最小 [sparse] 配置；只读，不需要 pool.toml",
+      "kind": "action",
+      "idempotent": true,
+      "supportsDryRun": true,
+      "supportsResultJson": true,
+      "params": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "label": "工作副本",
+          "description": "现有工作副本目录，相对路径按 cwd 解析"
+        }
+      ]
     }
   ]
 }

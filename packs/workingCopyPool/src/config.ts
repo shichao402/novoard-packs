@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parse, TomlError } from "smol-toml";
 import { UsageError } from "../../../shared/cli";
+import { DEPTHS, isDepth, specErrors, specFromExclude, type Depth, type SparseSpec } from "./sparse";
 
 export type PoolConfig = {
   maxSlots: number;
@@ -15,7 +16,7 @@ export type PoolConfig = {
   resident: string[];
   branches: { pattern: string; listFrom: string[]; recentDays: number };
   aliases: Record<string, string>;
-  sparse: { exclude: string[] };
+  sparse: SparseSpec;
   patchRetentionDays: number;
 };
 
@@ -25,7 +26,7 @@ export const CONFIG_FILE = "pool.toml";
 
 const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays"]);
 const BRANCH_KEYS = new Set(["pattern", "listFrom", "recentDays"]);
-const SPARSE_KEYS = new Set(["exclude"]);
+const SPARSE_KEYS = new Set(["exclude", "root", "depth"]);
 
 /** 时长：`30m`、`12h`、`1d`、`2w`，或 `forever`。 */
 export const TTL_RE = /^(\d+)(m|h|d|w)$/;
@@ -146,10 +147,7 @@ export function parseConfig(text: string): PoolConfig {
   }
 
   const s = table("sparse", SPARSE_KEYS);
-  const exclude = strList("sparse", "exclude", s.exclude).map((p) => p.replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, ""));
-  for (const item of exclude) {
-    if (item === "" || item.split("/").some((part) => part === ".." || part === ".")) fail("sparse", "exclude", `路径不合法：${item}`);
-  }
+  const sparse = parseSparse(s, fail, strList);
 
   for (const name of resident) {
     if (!isBranchName(name)) fail("", "resident", `分支名不合法：${name}`);
@@ -162,9 +160,65 @@ export function parseConfig(text: string): PoolConfig {
     resident: [...new Set(resident)],
     branches: { pattern, listFrom, recentDays },
     aliases,
-    sparse: { exclude: [...new Set(exclude)] },
+    sparse,
     patchRetentionDays,
   };
+}
+
+type Fail = (section: string, key: string | undefined, message: string) => never;
+
+/** 相对工作副本根的路径：正斜杠、去掉首尾斜杠和 ./；空、含 . 或 .. 段返回 undefined。 */
+function normalizeRel(raw: string): string | undefined {
+  const p = raw.trim().replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, "");
+  if (p === "" || p.split("/").some((part) => part === "" || part === ".." || part === ".")) return undefined;
+  return p;
+}
+
+/**
+ * `[sparse]`：`root` + `[sparse.depth]` 映射表；或兼容写法 `exclude = [...]`（等价于根 infinity、这些路径 exclude）。
+ * 两种写法不能混用，避免同一目录有两套事实来源。
+ */
+function parseSparse(s: Record<string, unknown>, fail: Fail, strList: (section: string, key: string, value: unknown) => string[]): SparseSpec {
+  const hasNew = s.root !== undefined || s.depth !== undefined;
+  if (s.exclude !== undefined && hasNew) fail("sparse", "exclude", "不能和 root / [sparse.depth] 同时使用；白名单写法里用 \"路径\" = \"exclude\"");
+  if (s.exclude !== undefined) {
+    const exclude: string[] = [];
+    for (const item of strList("sparse", "exclude", s.exclude)) {
+      const p = normalizeRel(item);
+      if (!p) fail("sparse", "exclude", `路径不合法：${item}`);
+      exclude.push(p!);
+    }
+    const spec = specFromExclude([...new Set(exclude)]);
+    const errors = specErrors(spec);
+    if (errors.length) fail("sparse", "exclude", errors[0]);
+    return spec;
+  }
+
+  const depthChoices = `${DEPTHS.join(" / ")}`;
+  let root: SparseSpec["root"] = "infinity";
+  if (s.root !== undefined) {
+    if (!isDepth(s.root) || s.root === "exclude") fail("sparse", "root", `应为 ${DEPTHS.filter((d) => d !== "exclude").join(" / ")}`);
+    root = s.root as SparseSpec["root"];
+  }
+  const paths: Record<string, Depth> = {};
+  if (s.depth !== undefined) {
+    const d = s.depth;
+    if (!d || typeof d !== "object" || Array.isArray(d) || d instanceof Date) fail("sparse", "depth", "应为表（[sparse.depth]）");
+    for (const [key, value] of Object.entries(d as Record<string, unknown>)) {
+      const p = normalizeRel(key);
+      if (!p) fail("sparse.depth", key, `路径不合法：${key}`);
+      if (!isDepth(value)) fail("sparse.depth", key, `应为 ${depthChoices}`);
+      if (p! in paths && paths[p!] !== value) fail("sparse.depth", key, `与同一路径的另一条写法冲突`);
+      paths[p!] = value as Depth;
+    }
+  }
+  const spec: SparseSpec = { root, paths };
+  for (const error of specErrors(spec)) {
+    const rel = error.split(" ")[0];
+    const key = Object.keys((s.depth as Record<string, unknown>) ?? {}).find((k) => normalizeRel(k) === rel);
+    fail("sparse.depth", key, error);
+  }
+  return spec;
 }
 
 export function configPath(root: string): string {
