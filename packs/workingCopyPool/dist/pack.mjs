@@ -365,7 +365,7 @@ async function main(manifest2, run2) {
 import { existsSync, readFileSync } from "node:fs";
 import path2 from "node:path";
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/error.js
+// node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
   let lines = string.slice(0, ptr).split(/\r?\n/);
   return [lines.length, lines.pop().length + 1];
@@ -409,7 +409,7 @@ ${codeblock}`, options);
   }
 };
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/primitive.js
+// node_modules/smol-toml/dist/primitive.js
 function parseString(ctx) {
   let startPtr = ctx.p;
   let c = ctx.s.charCodeAt(ctx.p++);
@@ -510,7 +510,7 @@ function parseString(ctx) {
   TomlError.x("unfinished string", ctx, startPtr);
 }
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/date.js
+// node_modules/smol-toml/dist/date.js
 var DATE_TIME_RE = /^(\d{4}-\d{2}-\d{2})?[Tt ]?(?:(\d{2}):\d{2}(?::\d{2}(?:\.\d+)?)?)?(Z|z|[-+]\d{2}:\d{2})?$/i;
 var TomlDate = class _TomlDate extends Date {
   #hasDate = false;
@@ -625,7 +625,7 @@ var TomlDate = class _TomlDate extends Date {
   }
 };
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/extract.js
+// node_modules/smol-toml/dist/extract.js
 function isDigit(char, base = 10) {
   return base === 16 ? char > 47 && char < 58 || char > 64 && char < 71 || char > 96 && char < 103 : char > 47 && char < 48 + base;
 }
@@ -834,7 +834,7 @@ function readDate(ctx, str, type, unsafeDelim, errPtr, temporalSuffix) {
   }
 }
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/util.js
+// node_modules/smol-toml/dist/util.js
 function skipComment(ctx) {
   for (; ctx.p < ctx.s.length; ctx.p++) {
     let c = ctx.s.charCodeAt(ctx.p);
@@ -860,7 +860,7 @@ function skipVoid(ctx, banNewLines, banComments) {
   }
 }
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/struct.js
+// node_modules/smol-toml/dist/struct.js
 function parseKey(ctx, end = 61) {
   let startPtr;
   let state = 0;
@@ -977,7 +977,7 @@ function parseArray(ctx) {
   TomlError.x("unfinished array", ctx, startPtr);
 }
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/parse.js
+// node_modules/smol-toml/dist/parse.js
 function peekTable(ctx, key2, table, meta, type) {
   let t = table;
   let m = meta;
@@ -1120,7 +1120,7 @@ function parse(toml, options = {}) {
   return res;
 }
 
-// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/stringify.js
+// node_modules/smol-toml/dist/stringify.js
 var HAS_WELLFORMED = !!"".isWellFormed;
 
 // packs/workingCopyPool/src/sparse.ts
