@@ -7,7 +7,7 @@ import path from "node:path";
 import type { Choice, ToolRunContext } from "../../../shared/types";
 import { branchFromPath, loadConfig, type PoolConfig } from "./config";
 import { describeLease, describeSlot, fmtTime, poolView, type Pool, type SlotView } from "./pool";
-import { isIdle, leaseActive, poolPaths, readState, recentBranches, slotDir, type PoolState } from "./state";
+import { isIdle, leaseActive, poolPaths, readState, recentBranches, type PoolState } from "./state";
 import { Cancelled, svn, svnStatus, type SvnCtx } from "./svn";
 
 /** 远端列表缓存有效期（PRD：10 分钟内直接用缓存）。 */
@@ -231,13 +231,13 @@ export async function status(pool: Pool): Promise<{ detail: string; summary: str
   for (const slot of view.slots) {
     const left = deadline - Date.now();
     // 切换中、删除中的槽位正被别人改，不读；预算用完的标 null
-    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync(path.join(slotDir(pool.paths, slot.id), ".svn"))) {
+    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync(path.join(slot.path, ".svn"))) {
       if (left < 500) skipped += 1;
       changes.set(slot.id, null);
       continue;
     }
     try {
-      const st = await svnStatus(readOnlyCtx(pool, left), slotDir(pool.paths, slot.id), left);
+      const st = await svnStatus(readOnlyCtx(pool, left), slot.path, left);
       changes.set(slot.id, { versioned: st.versioned.length, unversioned: st.unversioned.length, problems: st.problems });
     } catch (error) {
       if (error instanceof Cancelled) throw error;
@@ -248,7 +248,7 @@ export async function status(pool: Pool): Promise<{ detail: string; summary: str
   const lines = view.slots.map((v) => {
     const c = changes.get(v.id);
     const text = c ? (c.versioned || c.unversioned ? `，改动 ${c.versioned} / 未纳管 ${c.unversioned}` : "，无改动") : "";
-    return `${describeSlot(v, now)}${text}`;
+    return `${describeSlot(v, now)}${text}\n  实际目录：${v.path}`;
   });
   const count = (s: SlotView["state"]): number => view.slots.filter((v) => v.state === s).length;
   const summary = `${view.slots.length}/${view.maxSlots} 个槽位：占用 ${count("occupied")}，常驻 ${count("resident")}，空闲 ${count("idle")}${count("blocked") ? `，阻塞 ${count("blocked")}` : ""}${count("interrupted") ? `，中断 ${count("interrupted")}` : ""}`;

@@ -2,7 +2,7 @@
  * 池的核心流程（PRD working-copy-pool「执行工具」「切换流程」「新建流程」「中断恢复」）。
  * 约定：锁内只做 state.json 的读改写；svn、删除、释放占用都在锁外，用 phase 与 op 占位。
  */
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { UsageError } from "../../../shared/cli";
 import { prepareExclusiveAccess } from "../../../shared/occupants";
@@ -36,6 +36,7 @@ import {
 } from "./state";
 import { applySparse, behindCount, Cancelled, isObstruction, sparseCheckout, svn, svnBusy, svnInfo, svnStatus, SvnError, type SvnCtx } from "./svn";
 import { describeSparse, isFullCheckout } from "./sparse";
+import { assertStorageParent, checkCreationSpace, selectSlotPath, StorageOwnershipError } from "./storage";
 
 export type Pool = {
   root: string;
@@ -116,14 +117,16 @@ export function viewSlots(pool: Pool, state: PoolState): SlotView[] {
     lastUsed: slot.lastUsed ?? null,
     behind: typeof slot.behind === "number" ? slot.behind : null,
     blockedReason: slot.blockedReason ?? null,
-    path: slotDir(pool.paths, slot.id),
+    path: slotDir(pool.paths, slot),
     link: slot.branch ? branchLink(pool.paths, slot.branch) : null,
     target: slot.op?.target ?? null,
   }));
 }
 
-export function poolView(pool: Pool, state: PoolState): { root: string; maxSlots: number; resident: string[]; slots: SlotView[] } {
-  return { root: pool.root, maxSlots: pool.config.maxSlots, resident: pool.config.resident, slots: viewSlots(pool, state) };
+export function poolView(pool: Pool, state: PoolState): { root: string; maxSlots: number; resident: string[]; storage: PoolConfig["storage"]; slots: SlotView[] } {
+  return { root: pool.root, maxSlots: pool.config.maxSlots, resident: pool.config.resident,
+    storage: { ...pool.config.storage, roots: pool.config.storage.roots.length ? pool.config.storage.roots : [pool.paths.slots] },
+    slots: viewSlots(pool, state) };
 }
 
 const STATE_TEXT: Record<SlotView["state"], string> = {
@@ -175,7 +178,7 @@ async function dropLink(pool: Pool, link: string, wc: string, notes: string[]): 
 function restoreLink(pool: Pool, slot: Slot): void {
   if (!slot.branch) return;
   try {
-    createLink(slotDir(pool.paths, slot.id), branchLink(pool.paths, slot.branch));
+    createLink(slotDir(pool.paths, slot), branchLink(pool.paths, slot.branch));
   } catch (error) {
     appendLog(pool.ctx.logFile, `[workingCopyPool] 恢复链接失败 ${slot.branch}: ${String(error)}`);
   }
@@ -221,6 +224,7 @@ export async function recover(pool: Pool): Promise<string[]> {
         if (slot && ourOp(slot)) {
           slot.phase = "blocked";
           slot.blockedReason = `中断恢复失败：${message}`;
+          if (error instanceof StorageOwnershipError) slot.ownershipUnconfirmed = true;
           slot.op = undefined;
         }
       });
@@ -231,7 +235,12 @@ export async function recover(pool: Pool): Promise<string[]> {
 }
 
 async function recoverSlot(pool: Pool, id: string, op: SlotOp, branch: string): Promise<string> {
-  const wc = slotDir(pool.paths, id);
+  const slot = findSlot(readState(pool.paths), id);
+  const wc = slotDir(pool.paths, slot);
+  if (slot.path) assertStorageParent(wc);
+  if (slot.path && op.kind === "create" && !op.created && existsSync(wc)) {
+    throw new StorageOwnershipError(`新建目录所有权未确认：${wc}；保留目录与槽位记录，请人工检查`);
+  }
   const sctx = svnCtx(pool);
   const removeSlot = async (why: string): Promise<string> => {
     if (existsSync(wc)) rmSync(wc, { recursive: true, force: true, maxRetries: 3 });
@@ -307,7 +316,7 @@ type Claim =
   | { kind: "full"; slots: Slot[] };
 
 /** 选槽位（锁内调用）：已在该分支 → 空闲中 lastUsed 最早 → 新建 → 池满。 */
-export function claimSlot(state: PoolState, config: PoolConfig, branch: string, lease: Lease | null, now: Date, excluded: Set<string> = new Set()): Claim {
+export function claimSlot(state: PoolState, config: PoolConfig, branch: string, lease: Lease | null, now: Date, excluded: Set<string> = new Set(), allocate?: (id: string) => string): Claim {
   const existing = state.slots.find((s) => s.branch === branch && (s.phase === "ready" || s.phase === "blocked") && !s.op);
   if (existing) {
     if (lease) existing.lease = laterLease(leaseActive(existing.lease, now) ? existing.lease : null, lease);
@@ -329,6 +338,7 @@ export function claimSlot(state: PoolState, config: PoolConfig, branch: string, 
   }
   if (state.slots.length < config.maxSlots) {
     const slot: Slot = { id: nextSlotId(state), branch: "", url: "", phase: "switching", lease: null, op: op("create") };
+    if (allocate) slot.path = allocate(slot.id);
     state.slots.push(slot);
     return { kind: "create", slot: { ...slot } };
   }
@@ -361,11 +371,13 @@ export async function obtain(pool: Pool, branch: string, lease: Lease | null): P
   const skipped = new Set<string>();
   for (;;) {
     const now = pool.now();
-    const claim = await mutate(pool.paths, (state) => claimSlot(state, pool.config, branch, lease, now, skipped));
+    const claim = await mutate(pool.paths, (state) => claimSlot(state, pool.config, branch, lease, now, skipped,
+      (id) => selectSlotPath(pool.paths, state, id, pool.config.storage)));
     if (claim.kind === "full") throw new Error(describeFull(pool, claim.slots));
     if (claim.kind === "busy") throw new Error(`${branch} 正在 ${claim.slot.id} 上被另一个任务处理，稍后再试`);
     if (claim.kind === "hit") {
-      const wc = slotDir(pool.paths, claim.slot.id);
+      const wc = slotDir(pool.paths, claim.slot);
+      if (claim.slot.path) assertStorageParent(wc);
       restoreLink(pool, claim.slot);
       if (claim.slot.phase === "blocked") notes.push(`注意：${claim.slot.id} 处于阻塞（${claim.slot.blockedReason ?? "原因未记录"}），请先处理`);
       const behind = await behindCount(sctx, wc).catch(() => undefined);
@@ -382,7 +394,7 @@ export async function obtain(pool: Pool, branch: string, lease: Lease | null): P
       skipped.add(claim.slot.id);
       continue;
     }
-    const wc = slotDir(pool.paths, claim.slot.id);
+    const wc = slotDir(pool.paths, claim.slot);
     const behind = await behindCount(sctx, wc).catch(() => undefined);
     const done = pool.now();
     await mutate(pool.paths, (state) => {
@@ -410,7 +422,7 @@ async function finishCheck(pool: Pool, wc: string, url: string): Promise<{ url: 
 }
 
 async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string, notes: string[]): Promise<{ url: string } | "blocked"> {
-  const wc = slotDir(pool.paths, claimed.id);
+  const wc = slotDir(pool.paths, claimed);
   const sctx = svnCtx(pool);
   const from = claimed.branch;
   const back = async (patch: Partial<Slot>): Promise<void> => {
@@ -421,6 +433,12 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
     const fresh = findSlot(readState(pool.paths), claimed.id);
     restoreLink(pool, fresh);
   };
+  if (claimed.path) {
+    try { assertStorageParent(wc); } catch (error) {
+      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
 
   stage(pool, `${claimed.id}：${from || "(未定)"} → ${branch}`);
   if (from) {
@@ -473,18 +491,37 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
 }
 
 async function createFlow(pool: Pool, claimed: Slot, branch: string, url: string, notes: string[]): Promise<{ url: string }> {
-  const wc = slotDir(pool.paths, claimed.id);
+  const wc = slotDir(pool.paths, claimed);
   const sctx = svnCtx(pool);
-  if (existsSync(wc)) rmSync(wc, { recursive: true, force: true, maxRetries: 3 });
   const spec = pool.config.sparse;
-  stage(pool, `${claimed.id}：新建 ${branch}${isFullCheckout(spec) ? "" : `（${describeSparse(spec)[0]}）`}`);
+  let created = false;
+  stage(pool, `${claimed.id}：新建 ${branch}${isFullCheckout(spec) ? "" : `（${describeSparse(spec)[0]}）`}，实际目录 ${wc}`);
   try {
+    checkCreationSpace(wc, pool.config.storage.minFreeGiB);
+    mkdirSync(wc);
+    created = true;
+    await mutate(pool.paths, (state) => {
+      const slot = findSlot(state, claimed.id);
+      if (!ourOp(slot)) throw new Error(`${claimed.id} 新建操作已被其他进程接手`);
+      slot.op!.created = true;
+    });
     await sparseCheckout(sctx, url, wc, spec);
     notes.push(`新建槽位 ${claimed.id}`);
     return await finishCheck(pool, wc, url);
   } catch (error) {
-    if (error instanceof Cancelled) throw error;
-    rmSync(wc, { recursive: true, force: true, maxRetries: 3 });
+    if (error instanceof Cancelled && created) throw error;
+    if (created) {
+      try { assertStorageParent(wc); } catch (storageError) {
+        await mutate(pool.paths, (state) => {
+          const slot = findSlot(state, claimed.id);
+          slot.phase = "blocked";
+          slot.blockedReason = storageError instanceof Error ? storageError.message : String(storageError);
+          slot.op = undefined;
+        });
+        throw storageError;
+      }
+      rmSync(wc, { recursive: true, force: true, maxRetries: 3 });
+    }
     await mutate(pool.paths, (state) => {
       state.slots = state.slots.filter((s) => s.id !== claimed.id);
     });
@@ -526,14 +563,23 @@ export async function gc(pool: Pool): Promise<GcReport> {
 
   // 复查阻塞槽位
   for (const slot of readState(pool.paths).slots.filter((s) => s.phase === "blocked" && !s.op)) {
-    const wc = slotDir(pool.paths, slot.id);
+    const wc = slotDir(pool.paths, slot);
     try {
+      if (slot.ownershipUnconfirmed) {
+        report.blocked.push(`${slot.id} ${slot.branch}：${slot.blockedReason ?? "目录所有权需要人工确认"}`);
+        continue;
+      }
+      if (slot.path) assertStorageParent(wc);
+      const info = await svnInfo(sctx, wc);
+      if (!info) {
+        report.blocked.push(`${slot.id} ${slot.branch}：工作副本不可访问，保留阻塞与记录`);
+        continue;
+      }
       const st = await svnStatus(sctx, wc);
       if (st.problems.length > 0 || st.wcLocked) {
         report.blocked.push(`${slot.id} ${slot.branch}：${st.problems.join("；") || "工作副本被锁"}`);
         continue;
       }
-      const info = await svnInfo(sctx, wc);
       await mutate(pool.paths, (state) => {
         const s = state.slots.find((x) => x.id === slot.id);
         if (!s || s.phase !== "blocked" || s.op) return;
@@ -586,7 +632,7 @@ export async function gc(pool: Pool): Promise<GcReport> {
 }
 
 async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
-  const wc = slotDir(pool.paths, claimed.id);
+  const wc = slotDir(pool.paths, claimed);
   const notes: string[] = [];
   const back = async (patch: Partial<Slot>): Promise<void> => {
     await mutate(pool.paths, (state) => {
@@ -595,6 +641,12 @@ async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
     });
     restoreLink(pool, findSlot(readState(pool.paths), claimed.id));
   };
+  if (claimed.path) {
+    try { assertStorageParent(wc); } catch (error) {
+      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
   if (claimed.branch) {
     const link = branchLink(pool.paths, claimed.branch);
     if (linkExists(link) && samePath(linkTarget(link), wc)) await dropLink(pool, link, wc, notes);
@@ -633,9 +685,9 @@ export function syncLinks(pool: Pool): string[] {
   const wanted = new Map<string, string>();
   for (const slot of state.slots) {
     if (!slot.branch || slot.op || (slot.phase !== "ready" && slot.phase !== "blocked")) continue;
-    wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot.id));
+    wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot));
   }
-  const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s.id)));
+  const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
   if (existsSync(pool.paths.branch)) {
     for (const name of readdirSync(pool.paths.branch)) {
       const link = path.join(pool.paths.branch, name);
@@ -738,7 +790,7 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
     }
   }
 
-  const wc = slotDir(pool.paths, claim.slot.id);
+  const wc = slotDir(pool.paths, claim.slot);
   const sctx = svnCtx(pool);
   stage(pool, `更新 ${branch}（${claim.slot.id}）`);
   try {

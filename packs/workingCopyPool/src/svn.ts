@@ -187,8 +187,10 @@ export async function svnStatus(ctx: SvnCtx, wc: string, timeoutMs?: number): Pr
 
 /** svn 输出的路径（绝对，或在 cwd 之下时相对 cwd）转成相对工作副本根、正斜杠。 */
 export function relTo(wc: string, p: string, cwd?: string): string {
-  const norm = (cwd && !path.isAbsolute(p) ? path.resolve(cwd, p) : p).replace(/\\/g, "/");
-  const root = wc.replace(/\\/g, "/").replace(/\/+$/, "");
+  const resolved = Boolean(cwd) && !path.isAbsolute(p);
+  const norm = (resolved ? path.resolve(cwd!, p) : p).replace(/\\/g, "/");
+  // 相对路径 resolve 后带盘符（win32），根目录也同样 resolve 才能比较
+  const root = (resolved ? path.resolve(wc) : wc).replace(/\\/g, "/").replace(/\/+$/, "");
   if (norm === root) return ".";
   if (norm.startsWith(`${root}/`)) return norm.slice(root.length + 1);
   return norm;

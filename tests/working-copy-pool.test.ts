@@ -58,6 +58,7 @@ describe("pool.toml 校验", () => {
       aliases: {},
       sparse: FULL_SPARSE,
       patchRetentionDays: 30,
+      storage: { roots: [], minFreeGiB: 0 },
     });
   });
 

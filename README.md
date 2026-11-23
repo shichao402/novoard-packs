@@ -14,6 +14,20 @@ novoard-agent 的通用能力包。协议见 novoard-agent 仓 `docs/adr/0019-ca
 
 workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`。Windows 上池根路径要尽量短（如 `D:/osgpool`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。稀疏检出用 `[sparse]` 的 `root` 加 `[sparse.depth]` 映射表，白名单、黑名单都能写；已有精简工程时先跑 `capture-sparse` 导出。
 
+## 多盘槽位
+
+同一个池可以把新槽位分配到不同硬盘的专用目录，在 `pool.toml` 末尾增加：
+
+```toml
+[storage]
+roots = ["D:/pool-slots", "F:/pool-slots"]
+minFreeGiB = 700
+```
+
+先创建这些目录，再按需调整顶层 `maxSlots`。只影响新建：旧槽位不搬动，新槽位实际路径写入 state.json 的 `path`；后续切换、更新与回收沿用记录。新建选择剩余空间最多的合格位置，所有位置不合格则失败，不回退到未配置的盘。`minFreeGiB` 是检出前准入门槛，不是工程大小估算或完工后的剩余空间保证。不写这段继续使用原来的 `slots`。
+
+详见 [多盘配置、安全边界与验证](docs/multi-disk-pool.md)。
+
 ## 目录
 
 ```

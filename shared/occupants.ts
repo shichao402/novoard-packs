@@ -55,12 +55,14 @@ const ALWAYS_RELEASE = new Set([
 // 强杀会损坏这些 IDE 的索引，只请求正常关闭；关不掉就让任务失败并报告。
 const NEVER_FORCE_KILL = ["rider", "idea", "clion", "webstorm", "pycharm", "goland", "devenv"];
 
-// 打包后本模块位于 packs/<id>/dist/pack.mjs，build 把 shared/scripts 复制到 packs/<id>/scripts/。
+// 打包后本模块位于 packs/<id>/dist/pack.mjs，build 把 shared/scripts 复制到 packs/<id>/scripts/；
+// 从源码运行（vitest）时本模块就在 shared/，脚本在 shared/scripts/。
 function helperScript(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const found = path.resolve(here, "../scripts/list-occupants.ps1");
-  if (!existsSync(found)) {
-    throw new Error(`找不到 ${found}`);
+  const candidates = [path.resolve(here, "../scripts/list-occupants.ps1"), path.resolve(here, "scripts/list-occupants.ps1")];
+  const found = candidates.find((p) => existsSync(p));
+  if (!found) {
+    throw new Error(`找不到 ${candidates[0]}`);
   }
   return found;
 }

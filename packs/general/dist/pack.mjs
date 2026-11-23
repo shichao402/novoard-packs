@@ -633,9 +633,10 @@ var ALWAYS_RELEASE = /* @__PURE__ */ new Set([
 var NEVER_FORCE_KILL = ["rider", "idea", "clion", "webstorm", "pycharm", "goland", "devenv"];
 function helperScript() {
   const here = path3.dirname(fileURLToPath2(import.meta.url));
-  const found = path3.resolve(here, "../scripts/list-occupants.ps1");
-  if (!existsSync(found)) {
-    throw new Error(`\u627E\u4E0D\u5230 ${found}`);
+  const candidates = [path3.resolve(here, "../scripts/list-occupants.ps1"), path3.resolve(here, "scripts/list-occupants.ps1")];
+  const found = candidates.find((p) => existsSync(p));
+  if (!found) {
+    throw new Error(`\u627E\u4E0D\u5230 ${candidates[0]}`);
   }
   return found;
 }

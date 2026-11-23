@@ -18,15 +18,17 @@ export type PoolConfig = {
   aliases: Record<string, string>;
   sparse: SparseSpec;
   patchRetentionDays: number;
+  storage: { roots: string[]; minFreeGiB: number };
 };
 
 export class ConfigError extends UsageError {}
 
 export const CONFIG_FILE = "pool.toml";
 
-const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays"]);
+const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage"]);
 const BRANCH_KEYS = new Set(["pattern", "listFrom", "recentDays"]);
 const SPARSE_KEYS = new Set(["exclude", "root", "depth"]);
+const STORAGE_KEYS = new Set(["roots", "minFreeGiB"]);
 
 /** 时长：`30m`、`12h`、`1d`、`2w`，或 `forever`。 */
 export const TTL_RE = /^(\d+)(m|h|d|w)$/;
@@ -146,6 +148,19 @@ export function parseConfig(text: string): PoolConfig {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
 
+  const disk = table("storage", STORAGE_KEYS);
+  const roots = strList("storage", "roots", disk.roots);
+  if (disk.roots !== undefined && roots.length === 0) fail("storage", "roots", "至少指定一个专用目录，省略则使用池根/slots");
+  for (const root of roots) {
+    if (!path.isAbsolute(root) || (process.platform === "win32" && !/^[a-z]:[\\/]/i.test(root))) {
+      fail("storage", "roots", `应为本机绝对目录：${root}`);
+    }
+    if (path.resolve(root) === path.parse(path.resolve(root)).root || /[\u0000-\u001f]/.test(root)) {
+      fail("storage", "roots", `不能使用盘根或含控制字符的目录：${root}`);
+    }
+  }
+  const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
+
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
 
@@ -162,6 +177,7 @@ export function parseConfig(text: string): PoolConfig {
     aliases,
     sparse,
     patchRetentionDays,
+    storage: { roots: [...new Set(roots.map((p) => path.normalize(p)))], minFreeGiB },
   };
 }
 

@@ -22,10 +22,14 @@ export type SlotOp = {
   lease?: Lease | null;
   /** 切换前所在分支；释放占用失败时据此恢复。 */
   from?: string;
+  /** 新建流程 exclusive mkdir 成功后记录；未确认所有权的目录不可在恢复时删除。 */
+  created?: boolean;
 };
 
 export type Slot = {
   id: string;
+  /** 新建时固定的实际绝对路径；旧记录缺省为 <池根>/slots/<id>，不随配置迁移。 */
+  path?: string;
   /** 当前所在分支；空串表示刚建或中断后状态不明，需要重新切换。 */
   branch: string;
   url: string;
@@ -33,6 +37,8 @@ export type Slot = {
   lease?: Lease | null;
   lastUsed?: string;
   blockedReason?: string;
+  /** 无法确认新建目录归属时禁止自动解锁，须人工确认。 */
+  ownershipUnconfirmed?: boolean;
   /** 最近一次读到的落后 revision 数。 */
   behind?: number;
   op?: SlotOp;
@@ -67,8 +73,15 @@ export function poolPaths(root: string): PoolPaths {
   };
 }
 
-export function slotDir(paths: PoolPaths, id: string): string {
-  return path.join(paths.slots, id);
+export function slotDir(paths: PoolPaths, value: string | Pick<Slot, "id" | "path">): string {
+  const slot = typeof value === "string" ? readState(paths).slots.find((s) => s.id === value) ?? { id: value } : value;
+  if (!/^s\d{2,3}$/.test(slot.id)) throw new Error(`槽位编号不合法：${slot.id}`);
+  if (slot.path === undefined) return path.join(paths.slots, slot.id);
+  if (typeof slot.path !== "string" || !path.isAbsolute(slot.path) || path.basename(path.normalize(slot.path)) !== slot.id
+    || (process.platform === "win32" && !/^[a-z]:[\\/]/i.test(slot.path)) || /[\u0000-\u001f]/.test(slot.path)) {
+    throw new Error(`槽位 ${slot.id} 的 path 必须是以槽位编号结尾的本机绝对目录`);
+  }
+  return path.normalize(slot.path);
 }
 
 /** 分支名转目录名：`/`、`\`、`:` 等 Windows 不允许或有歧义的字符换成 `_`。 */
@@ -94,6 +107,15 @@ export function readState(paths: PoolPaths): PoolState {
   if (!existsSync(paths.state)) return { version: 1, slots: [] };
   const value = JSON.parse(readFileSync(paths.state, "utf8")) as PoolState;
   if (!value || !Array.isArray(value.slots)) throw new Error(`${paths.state} 格式不对`);
+  const ids = new Set<string>();
+  const locations = new Set<string>();
+  for (const slot of value.slots) {
+    const wc = slotDir(paths, slot);
+    const location = process.platform === "win32" ? wc.toLowerCase() : wc;
+    if (ids.has(slot.id) || locations.has(location)) throw new Error(`${paths.state} 存在重复槽位或目录：${slot.id}`);
+    ids.add(slot.id);
+    locations.add(location);
+  }
   return value;
 }
 

@@ -70,7 +70,8 @@ async function runAcquire(params: Record<string, unknown>, ctx: ToolRunContext):
   const summary = acquireSummary(outcome);
   const view = poolView(pool, readState(pool.paths));
   const entry = view.slots.find((s) => s.id === outcome.slot)?.link ?? "";
-  const lines = [summary, `入口：${entry}`];
+  const wc = view.slots.find((s) => s.id === outcome.slot)?.path ?? "";
+  const lines = [summary, `入口：${entry}`, `实际目录：${wc}`];
   if (outcome.notes.length) lines.push(...outcome.notes);
   if (recovered.length) lines.push(`中断恢复：${recovered.join("；")}`);
   return { detail: lines.join("\n"), code: 0, summary, pool: view };
@@ -139,6 +140,10 @@ function dryRun(displayName: string, toolId: string, params: Record<string, unkn
   if (!existsSync(path.join(root, CONFIG_FILE))) return head;
   const config = loadConfig(root);
   const lines = [head, `池根 ${root}，最多 ${config.maxSlots} 个槽位`];
+  if (toolId === "acquire" || toolId === "refresh") {
+    lines.push(config.storage.roots.length ? `新槽位候选目录：${config.storage.roots.join("、")}（空间最多的合格目录优先）` : `新槽位目录：${path.join(root, "slots")}`);
+    lines.push(`新建准入：至少 ${config.storage.minFreeGiB} GiB 可用空间；现有槽位不搬迁`);
+  }
   if (toolId === "acquire") {
     lines.push(`分支 URL：${branchUrl(config, String(params.branch))}`);
     lines.push(`保留：${typeof params.ttl === "string" && params.ttl ? params.ttl : config.defaultTtl}${params.tag ? `，标签 ${params.tag}` : ""}`);

@@ -26,7 +26,7 @@ const occupied: ToolManifest = {
 const status: ToolManifest = {
   id: "status",
   displayName: "池状态",
-  description: "每个槽位的分支、状态、租约、标签、本地改动、落后 revision 与最后使用时间",
+  description: "每个槽位的分支、状态、租约、标签、本地改动、落后 revision、最后使用时间与实际存放路径",
   kind: "query",
   idempotent: true,
   supportsDryRun: true,

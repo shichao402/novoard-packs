@@ -1,6 +1,6 @@
 // packs/workingCopyPool/src/index.ts
 import { existsSync as existsSync10 } from "node:fs";
-import path13 from "node:path";
+import path14 from "node:path";
 
 // shared/cli.ts
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
@@ -47,9 +47,9 @@ function validateToolParams(tool, raw, rawArgs) {
   if (rawArgs && rawArgs.length > 0 && !tool.allowRawArgs) {
     errors.push(`\u5DE5\u5177 ${tool.id} \u4E0D\u5141\u8BB8 raw args`);
   }
-  for (const key of Object.keys(input)) {
-    if (!known.has(key)) {
-      errors.push(`\u672A\u77E5\u53C2\u6570: ${key}`);
+  for (const key2 of Object.keys(input)) {
+    if (!known.has(key2)) {
+      errors.push(`\u672A\u77E5\u53C2\u6570: ${key2}`);
     }
   }
   const params = {};
@@ -167,14 +167,14 @@ function parseArgv(manifest2, argv) {
       dryRun2 = parseBool();
       continue;
     }
-    const key = kebabToCamel(name);
-    const spec = specs.get(key);
+    const key2 = kebabToCamel(name);
+    const spec = specs.get(key2);
     if (!spec) {
       throw new UsageError(`${tool.id} \u6CA1\u6709\u53C2\u6570 --${name}`);
     }
     switch (spec.type) {
       case "boolean":
-        params[key] = parseBool();
+        params[key2] = parseBool();
         break;
       case "number": {
         const raw = takeValue();
@@ -182,17 +182,17 @@ function parseArgv(manifest2, argv) {
         if (raw.trim() === "" || Number.isNaN(value)) {
           throw new UsageError(`--${name} \u5E94\u4E3A\u6570\u5B57\uFF1A${raw}`);
         }
-        params[key] = value;
+        params[key2] = value;
         break;
       }
       case "string[]": {
-        const list = params[key] ?? [];
+        const list = params[key2] ?? [];
         list.push(takeValue());
-        params[key] = list;
+        params[key2] = list;
         break;
       }
       default:
-        params[key] = takeValue();
+        params[key2] = takeValue();
     }
   }
   if (!projectRoot) {
@@ -365,7 +365,7 @@ async function main(manifest2, run2) {
 import { existsSync, readFileSync } from "node:fs";
 import path2 from "node:path";
 
-// node_modules/smol-toml/dist/error.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
   let lines = string.slice(0, ptr).split(/\r?\n/);
   return [lines.length, lines.pop().length + 1];
@@ -409,7 +409,7 @@ ${codeblock}`, options);
   }
 };
 
-// node_modules/smol-toml/dist/primitive.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/primitive.js
 function parseString(ctx) {
   let startPtr = ctx.p;
   let c = ctx.s.charCodeAt(ctx.p++);
@@ -510,7 +510,7 @@ function parseString(ctx) {
   TomlError.x("unfinished string", ctx, startPtr);
 }
 
-// node_modules/smol-toml/dist/date.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/date.js
 var DATE_TIME_RE = /^(\d{4}-\d{2}-\d{2})?[Tt ]?(?:(\d{2}):\d{2}(?::\d{2}(?:\.\d+)?)?)?(Z|z|[-+]\d{2}:\d{2})?$/i;
 var TomlDate = class _TomlDate extends Date {
   #hasDate = false;
@@ -625,7 +625,7 @@ var TomlDate = class _TomlDate extends Date {
   }
 };
 
-// node_modules/smol-toml/dist/extract.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/extract.js
 function isDigit(char, base = 10) {
   return base === 16 ? char > 47 && char < 58 || char > 64 && char < 71 || char > 96 && char < 103 : char > 47 && char < 48 + base;
 }
@@ -834,7 +834,7 @@ function readDate(ctx, str, type, unsafeDelim, errPtr, temporalSuffix) {
   }
 }
 
-// node_modules/smol-toml/dist/util.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/util.js
 function skipComment(ctx) {
   for (; ctx.p < ctx.s.length; ctx.p++) {
     let c = ctx.s.charCodeAt(ctx.p);
@@ -860,7 +860,7 @@ function skipVoid(ctx, banNewLines, banComments) {
   }
 }
 
-// node_modules/smol-toml/dist/struct.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/struct.js
 function parseKey(ctx, end = 61) {
   let startPtr;
   let state = 0;
@@ -915,11 +915,11 @@ function parseInlineTable(ctx) {
     let t = res;
     let hasOwn = false;
     let errPtr = ctx.p;
-    let key = parseKey(ctx);
-    for (let i = 0; i < key.length; i++) {
+    let key2 = parseKey(ctx);
+    for (let i = 0; i < key2.length; i++) {
       if (i)
         t = hasOwn ? t[k] : t[k] = /* @__PURE__ */ Object.create(null);
-      k = key[i];
+      k = key2[i];
       if ((hasOwn = Object.hasOwn(t, k)) && (typeof t[k] !== "object" || seen.has(t[k]))) {
         TomlError.x("trying to redefine an already defined value", ctx, errPtr);
       }
@@ -977,14 +977,14 @@ function parseArray(ctx) {
   TomlError.x("unfinished array", ctx, startPtr);
 }
 
-// node_modules/smol-toml/dist/parse.js
-function peekTable(ctx, key, table, meta, type) {
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/parse.js
+function peekTable(ctx, key2, table, meta, type) {
   let t = table;
   let m = meta;
   let k;
   let hasOwn = false;
   let state;
-  for (let i = 0; i < key.length; i++) {
+  for (let i = 0; i < key2.length; i++) {
     if (i) {
       t = hasOwn ? t[k] : t[k] = /* @__PURE__ */ Object.create(null);
       m = (state = m[k]).c;
@@ -997,7 +997,7 @@ function peekTable(ctx, key, table, meta, type) {
         m = m[l].c;
       }
     }
-    k = key[i];
+    k = key2[i];
     if ((hasOwn = Object.hasOwn(t, k)) && m[k]?.t === 0 && m[k]?.d) {
       return null;
     }
@@ -1010,7 +1010,7 @@ function peekTable(ctx, key, table, meta, type) {
         Object.defineProperty(m, k, { enumerable: true, configurable: true, writable: true });
       }
       m[k] = {
-        t: i < key.length - 1 && type === 2 ? 3 : type,
+        t: i < key2.length - 1 && type === 2 ? 3 : type,
         d: false,
         i: 0,
         c: /* @__PURE__ */ Object.create(null)
@@ -1120,7 +1120,7 @@ function parse(toml, options = {}) {
   return res;
 }
 
-// node_modules/smol-toml/dist/stringify.js
+// D:/workspace/GitHub/novoard-packs/node_modules/smol-toml/dist/stringify.js
 var HAS_WELLFORMED = !!"".isWellFormed;
 
 // packs/workingCopyPool/src/sparse.ts
@@ -1278,9 +1278,10 @@ function formatSpecToml(spec) {
 var ConfigError = class extends UsageError {
 };
 var CONFIG_FILE = "pool.toml";
-var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays"]);
+var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage"]);
 var BRANCH_KEYS = /* @__PURE__ */ new Set(["pattern", "listFrom", "recentDays"]);
 var SPARSE_KEYS = /* @__PURE__ */ new Set(["exclude", "root", "depth"]);
+var STORAGE_KEYS = /* @__PURE__ */ new Set(["roots", "minFreeGiB"]);
 var TTL_RE = /^(\d+)(m|h|d|w)$/;
 function isTtl(value) {
   return value === "forever" || TTL_RE.test(value) && Number(value.match(TTL_RE)[1]) > 0;
@@ -1292,7 +1293,7 @@ function leaseUntil(ttl, now) {
   const unit = { m: 6e4, h: 36e5, d: 864e5, w: 7 * 864e5 }[match[2]];
   return new Date(now.getTime() + Number(match[1]) * unit).toISOString();
 }
-function lineOf(text, section, key) {
+function lineOf(text, section, key2) {
   const lines = text.split(/\r?\n/);
   let current = "";
   for (let i = 0; i < lines.length; i++) {
@@ -1300,12 +1301,12 @@ function lineOf(text, section, key) {
     const header = line.match(/^\[\s*([^\]]+?)\s*\]/);
     if (header) {
       current = header[1];
-      if (!key && current === section) return i + 1;
+      if (!key2 && current === section) return i + 1;
       continue;
     }
-    if (!key) continue;
-    if (current === section && new RegExp(`^["']?${escapeRe(key)}["']?\\s*=`).test(line)) return i + 1;
-    if (current === "" && section && new RegExp(`^${escapeRe(section)}\\.${escapeRe(key)}\\s*=`).test(line)) return i + 1;
+    if (!key2) continue;
+    if (current === section && new RegExp(`^["']?${escapeRe(key2)}["']?\\s*=`).test(line)) return i + 1;
+    if (current === "" && section && new RegExp(`^${escapeRe(section)}\\.${escapeRe(key2)}\\s*=`).test(line)) return i + 1;
   }
   return void 0;
 }
@@ -1322,44 +1323,44 @@ function parseConfig(text) {
     }
     throw new ConfigError(`${CONFIG_FILE} \u89E3\u6790\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`);
   }
-  const fail = (section, key, message) => {
-    const line = lineOf(text, section, key);
-    const field = [section, key].filter(Boolean).join(".");
+  const fail = (section, key2, message) => {
+    const line = lineOf(text, section, key2);
+    const field = [section, key2].filter(Boolean).join(".");
     throw new ConfigError(`${CONFIG_FILE}${line ? ` \u7B2C ${line} \u884C` : ""} ${field}\uFF1A${message}`);
   };
-  for (const key of Object.keys(raw)) {
-    if (!TOP_KEYS.has(key)) fail("", key, "\u672A\u77E5\u5B57\u6BB5");
+  for (const key2 of Object.keys(raw)) {
+    if (!TOP_KEYS.has(key2)) fail("", key2, "\u672A\u77E5\u5B57\u6BB5");
   }
-  const int = (section, key, value, fallback, min) => {
+  const int = (section, key2, value, fallback, min) => {
     if (value === void 0) {
-      if (fallback === void 0) fail(section, void 0, `\u7F3A\u5C11 ${key}`);
+      if (fallback === void 0) fail(section, void 0, `\u7F3A\u5C11 ${key2}`);
       return fallback;
     }
     const n = typeof value === "bigint" ? Number(value) : value;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < min) fail(section, key, `\u5E94\u4E3A\u4E0D\u5C0F\u4E8E ${min} \u7684\u6574\u6570`);
+    if (typeof n !== "number" || !Number.isInteger(n) || n < min) fail(section, key2, `\u5E94\u4E3A\u4E0D\u5C0F\u4E8E ${min} \u7684\u6574\u6570`);
     return n;
   };
-  const str = (section, key, value, fallback) => {
+  const str = (section, key2, value, fallback) => {
     if (value === void 0) {
-      if (fallback === void 0) fail(section, key, "\u7F3A\u5C11\u8BE5\u5B57\u6BB5");
+      if (fallback === void 0) fail(section, key2, "\u7F3A\u5C11\u8BE5\u5B57\u6BB5");
       return fallback;
     }
-    if (typeof value !== "string" || value.trim() === "") fail(section, key, "\u5E94\u4E3A\u975E\u7A7A\u5B57\u7B26\u4E32");
+    if (typeof value !== "string" || value.trim() === "") fail(section, key2, "\u5E94\u4E3A\u975E\u7A7A\u5B57\u7B26\u4E32");
     return value.trim();
   };
-  const strList = (section, key, value) => {
+  const strList = (section, key2, value) => {
     if (value === void 0) return [];
     if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
-      fail(section, key, "\u5E94\u4E3A\u975E\u7A7A\u5B57\u7B26\u4E32\u6570\u7EC4");
+      fail(section, key2, "\u5E94\u4E3A\u975E\u7A7A\u5B57\u7B26\u4E32\u6570\u7EC4");
     }
     return value.map((v) => v.trim());
   };
-  const table = (key, allowed) => {
-    const value = raw[key];
+  const table = (key2, allowed) => {
+    const value = raw[key2];
     if (value === void 0) return {};
-    if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date) fail("", key, "\u5E94\u4E3A\u8868\uFF08[" + key + "]\uFF09");
+    if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date) fail("", key2, "\u5E94\u4E3A\u8868\uFF08[" + key2 + "]\uFF09");
     if (allowed) {
-      for (const k of Object.keys(value)) if (!allowed.has(k)) fail(key, k, "\u672A\u77E5\u5B57\u6BB5");
+      for (const k of Object.keys(value)) if (!allowed.has(k)) fail(key2, k, "\u672A\u77E5\u5B57\u6BB5");
     }
     return value;
   };
@@ -1383,6 +1384,18 @@ function parseConfig(text) {
   for (const [name, value] of Object.entries(a)) {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
+  const disk = table("storage", STORAGE_KEYS);
+  const roots = strList("storage", "roots", disk.roots);
+  if (disk.roots !== void 0 && roots.length === 0) fail("storage", "roots", "\u81F3\u5C11\u6307\u5B9A\u4E00\u4E2A\u4E13\u7528\u76EE\u5F55\uFF0C\u7701\u7565\u5219\u4F7F\u7528\u6C60\u6839/slots");
+  for (const root of roots) {
+    if (!path2.isAbsolute(root) || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(root)) {
+      fail("storage", "roots", `\u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u76EE\u5F55\uFF1A${root}`);
+    }
+    if (path2.resolve(root) === path2.parse(path2.resolve(root)).root || /[\u0000-\u001f]/.test(root)) {
+      fail("storage", "roots", `\u4E0D\u80FD\u4F7F\u7528\u76D8\u6839\u6216\u542B\u63A7\u5236\u5B57\u7B26\u7684\u76EE\u5F55\uFF1A${root}`);
+    }
+  }
+  const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
   for (const name of resident) {
@@ -1396,7 +1409,8 @@ function parseConfig(text) {
     branches: { pattern, listFrom, recentDays },
     aliases,
     sparse,
-    patchRetentionDays
+    patchRetentionDays,
+    storage: { roots: [...new Set(roots.map((p) => path2.normalize(p)))], minFreeGiB }
   };
 }
 function normalizeRel(raw) {
@@ -1429,19 +1443,19 @@ function parseSparse(s, fail, strList) {
   if (s.depth !== void 0) {
     const d = s.depth;
     if (!d || typeof d !== "object" || Array.isArray(d) || d instanceof Date) fail("sparse", "depth", "\u5E94\u4E3A\u8868\uFF08[sparse.depth]\uFF09");
-    for (const [key, value] of Object.entries(d)) {
-      const p = normalizeRel(key);
-      if (!p) fail("sparse.depth", key, `\u8DEF\u5F84\u4E0D\u5408\u6CD5\uFF1A${key}`);
-      if (!isDepth(value)) fail("sparse.depth", key, `\u5E94\u4E3A ${depthChoices}`);
-      if (p in paths && paths[p] !== value) fail("sparse.depth", key, `\u4E0E\u540C\u4E00\u8DEF\u5F84\u7684\u53E6\u4E00\u6761\u5199\u6CD5\u51B2\u7A81`);
+    for (const [key2, value] of Object.entries(d)) {
+      const p = normalizeRel(key2);
+      if (!p) fail("sparse.depth", key2, `\u8DEF\u5F84\u4E0D\u5408\u6CD5\uFF1A${key2}`);
+      if (!isDepth(value)) fail("sparse.depth", key2, `\u5E94\u4E3A ${depthChoices}`);
+      if (p in paths && paths[p] !== value) fail("sparse.depth", key2, `\u4E0E\u540C\u4E00\u8DEF\u5F84\u7684\u53E6\u4E00\u6761\u5199\u6CD5\u51B2\u7A81`);
       paths[p] = value;
     }
   }
   const spec = { root, paths };
   for (const error of specErrors(spec)) {
     const rel = error.split(" ")[0];
-    const key = Object.keys(s.depth ?? {}).find((k) => normalizeRel(k) === rel);
-    fail("sparse.depth", key, error);
+    const key2 = Object.keys(s.depth ?? {}).find((k) => normalizeRel(k) === rel);
+    fail("sparse.depth", key2, error);
   }
   return spec;
 }
@@ -1518,7 +1532,7 @@ var occupied = {
 var status = {
   id: "status",
   displayName: "\u6C60\u72B6\u6001",
-  description: "\u6BCF\u4E2A\u69FD\u4F4D\u7684\u5206\u652F\u3001\u72B6\u6001\u3001\u79DF\u7EA6\u3001\u6807\u7B7E\u3001\u672C\u5730\u6539\u52A8\u3001\u843D\u540E revision \u4E0E\u6700\u540E\u4F7F\u7528\u65F6\u95F4",
+  description: "\u6BCF\u4E2A\u69FD\u4F4D\u7684\u5206\u652F\u3001\u72B6\u6001\u3001\u79DF\u7EA6\u3001\u6807\u7B7E\u3001\u672C\u5730\u6539\u52A8\u3001\u843D\u540E revision\u3001\u6700\u540E\u4F7F\u7528\u65F6\u95F4\u4E0E\u5B9E\u9645\u5B58\u653E\u8DEF\u5F84",
   kind: "query",
   idempotent: true,
   supportsDryRun: true,
@@ -1586,8 +1600,8 @@ var manifest = {
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync8, readdirSync, rmSync as rmSync3, statSync as statSync3 } from "node:fs";
-import path11 from "node:path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync7, readdirSync, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
+import path12 from "node:path";
 
 // shared/occupants.ts
 import { closeSync, existsSync as existsSync2, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
@@ -1602,8 +1616,8 @@ import path3 from "node:path";
 var STRIP_ENV = /* @__PURE__ */ new Set(["VSCODE_NLS_CONFIG", "VSCODE_PID", "VSCODE_CWD", "VSCODE_NLS_CONFIG_JSON"]);
 function buildChildEnv(base = process.env) {
   const env = { ...base };
-  for (const key of STRIP_ENV) {
-    delete env[key];
+  for (const key2 of STRIP_ENV) {
+    delete env[key2];
   }
   env.GIT_TERMINAL_PROMPT = "0";
   env.PYTHONUTF8 = "1";
@@ -1866,9 +1880,10 @@ var ALWAYS_RELEASE = /* @__PURE__ */ new Set([
 var NEVER_FORCE_KILL = ["rider", "idea", "clion", "webstorm", "pycharm", "goland", "devenv"];
 function helperScript() {
   const here = path4.dirname(fileURLToPath2(import.meta.url));
-  const found = path4.resolve(here, "../scripts/list-occupants.ps1");
-  if (!existsSync2(found)) {
-    throw new Error(`\u627E\u4E0D\u5230 ${found}`);
+  const candidates3 = [path4.resolve(here, "../scripts/list-occupants.ps1"), path4.resolve(here, "scripts/list-occupants.ps1")];
+  const found = candidates3.find((p) => existsSync2(p));
+  if (!found) {
+    throw new Error(`\u627E\u4E0D\u5230 ${candidates3[0]}`);
   }
   return found;
 }
@@ -2664,8 +2679,14 @@ function poolPaths(root) {
     history: path8.join(meta, "history.jsonl")
   };
 }
-function slotDir(paths, id) {
-  return path8.join(paths.slots, id);
+function slotDir(paths, value) {
+  const slot = typeof value === "string" ? readState(paths).slots.find((s) => s.id === value) ?? { id: value } : value;
+  if (!/^s\d{2,3}$/.test(slot.id)) throw new Error(`\u69FD\u4F4D\u7F16\u53F7\u4E0D\u5408\u6CD5\uFF1A${slot.id}`);
+  if (slot.path === void 0) return path8.join(paths.slots, slot.id);
+  if (typeof slot.path !== "string" || !path8.isAbsolute(slot.path) || path8.basename(path8.normalize(slot.path)) !== slot.id || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(slot.path) || /[\u0000-\u001f]/.test(slot.path)) {
+    throw new Error(`\u69FD\u4F4D ${slot.id} \u7684 path \u5FC5\u987B\u662F\u4EE5\u69FD\u4F4D\u7F16\u53F7\u7ED3\u5C3E\u7684\u672C\u673A\u7EDD\u5BF9\u76EE\u5F55`);
+  }
+  return path8.normalize(slot.path);
 }
 function branchDirName(branch) {
   return branch.replace(/[\\/:*?"<>|\s]/g, "_");
@@ -2685,6 +2706,15 @@ function readState(paths) {
   if (!existsSync5(paths.state)) return { version: 1, slots: [] };
   const value = JSON.parse(readFileSync2(paths.state, "utf8"));
   if (!value || !Array.isArray(value.slots)) throw new Error(`${paths.state} \u683C\u5F0F\u4E0D\u5BF9`);
+  const ids = /* @__PURE__ */ new Set();
+  const locations = /* @__PURE__ */ new Set();
+  for (const slot of value.slots) {
+    const wc = slotDir(paths, slot);
+    const location = process.platform === "win32" ? wc.toLowerCase() : wc;
+    if (ids.has(slot.id) || locations.has(location)) throw new Error(`${paths.state} \u5B58\u5728\u91CD\u590D\u69FD\u4F4D\u6216\u76EE\u5F55\uFF1A${slot.id}`);
+    ids.add(slot.id);
+    locations.add(location);
+  }
   return value;
 }
 function writeJsonAtomic(file, value) {
@@ -2946,8 +2976,9 @@ async function svnStatus(ctx, wc, timeoutMs) {
   return summarizeStatus(parseStatusXml(result.stdout).map((it) => ({ ...it, path: relTo(wc, it.path, ctx.cwd) })));
 }
 function relTo(wc, p, cwd) {
-  const norm = (cwd && !path9.isAbsolute(p) ? path9.resolve(cwd, p) : p).replace(/\\/g, "/");
-  const root = wc.replace(/\\/g, "/").replace(/\/+$/, "");
+  const resolved = Boolean(cwd) && !path9.isAbsolute(p);
+  const norm = (resolved ? path9.resolve(cwd, p) : p).replace(/\\/g, "/");
+  const root = (resolved ? path9.resolve(wc) : wc).replace(/\\/g, "/").replace(/\/+$/, "");
   if (norm === root) return ".";
   if (norm.startsWith(`${root}/`)) return norm.slice(root.length + 1);
   return norm;
@@ -3218,9 +3249,116 @@ function samePath(a, b) {
   return norm(a) === norm(b);
 }
 
+// packs/workingCopyPool/src/storage.ts
+import { lstatSync as lstatSync2, realpathSync as realpathSync2, statfsSync, statSync as statSync3 } from "node:fs";
+import path11 from "node:path";
+var StorageOwnershipError = class extends Error {
+};
+var GIB = 1024 ** 3;
+function inspectStorage(root) {
+  const physical = realpathSync2(root);
+  const stat = statSync3(physical);
+  if (!stat.isDirectory()) throw new Error("\u4E0D\u662F\u76EE\u5F55");
+  const fs = statfsSync(physical);
+  return { root: physical, volume: String(stat.dev), freeGiB: Number(fs.bavail) * Number(fs.bsize) / GIB };
+}
+function assertStorageParent(wc) {
+  try {
+    if (!statSync3(path11.dirname(wc)).isDirectory()) throw new Error("\u4E0D\u662F\u76EE\u5F55");
+  } catch (error) {
+    throw new Error(`\u69FD\u4F4D\u5B58\u50A8\u76EE\u5F55\u4E0D\u53EF\u8BBF\u95EE\uFF1A${path11.dirname(wc)}\uFF1B\u4FDD\u7559\u69FD\u4F4D\u8BB0\u5F55\uFF0C\u8BF7\u68C0\u67E5\u78C1\u76D8\u6302\u8F7D\uFF08${error instanceof Error ? error.message : String(error)}\uFF09`);
+  }
+}
+function key(p) {
+  const normalized = path11.resolve(p);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+function contains(parent, child) {
+  const rel = path11.relative(key(parent), key(child));
+  return rel === "" || !rel.startsWith(`..${path11.sep}`) && rel !== ".." && !path11.isAbsolute(rel);
+}
+function existsEntry(p) {
+  try {
+    lstatSync2(p);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+function selectSlotPath(paths, state, id, storage, inspect = inspectStorage) {
+  const roots = storage.roots.length ? storage.roots : [paths.slots];
+  const notes = [];
+  const candidates3 = [];
+  const occupied3 = state.slots.map((s) => {
+    const wc = slotDir(paths, s);
+    try {
+      return realpathSync2(wc);
+    } catch {
+      return wc;
+    }
+  });
+  const protectedDirs = [paths.meta, paths.branch, paths.patches].map((p) => {
+    try {
+      return realpathSync2(p);
+    } catch {
+      return path11.resolve(p);
+    }
+  });
+  let physicalPool;
+  try {
+    physicalPool = realpathSync2(paths.root);
+  } catch {
+    physicalPool = path11.resolve(paths.root);
+  }
+  const reservations = /* @__PURE__ */ new Map();
+  for (const slot of state.slots) {
+    if (slot.op?.kind !== "create") continue;
+    try {
+      const disk = inspect(path11.dirname(slotDir(paths, slot)));
+      reservations.set(disk.volume, (reservations.get(disk.volume) ?? 0) + storage.minFreeGiB);
+    } catch {
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const root of roots) {
+    try {
+      const disk = inspect(root);
+      if (!Number.isFinite(disk.freeGiB) || disk.freeGiB < 0) throw new Error("\u65E0\u6CD5\u8BFB\u53D6\u6709\u6548\u7684\u5269\u4F59\u7A7A\u95F4");
+      const wc = path11.join(disk.root, id);
+      if (seen.has(key(wc))) continue;
+      seen.add(key(wc));
+      if (key(disk.root) === key(physicalPool) || protectedDirs.some((p) => contains(p, wc) || contains(wc, p))) {
+        throw new Error("\u4E0D\u80FD\u628A\u69FD\u4F4D\u653E\u5165\u6C60\u914D\u7F6E\u3001\u5165\u53E3\u6216\u5B58\u6863\u76EE\u5F55");
+      }
+      if (occupied3.some((p) => contains(p, wc) || contains(wc, p))) throw new Error("\u4E0E\u5DF2\u6709\u69FD\u4F4D\u8DEF\u5F84\u91CD\u53E0");
+      if (existsEntry(wc)) throw new Error(`\u5DF2\u6709 ${id} \u76EE\u5F55\u6216\u94FE\u63A5\uFF0C\u4E0D\u8986\u76D6`);
+      const available = disk.freeGiB - (reservations.get(disk.volume) ?? 0);
+      if (available < storage.minFreeGiB) {
+        throw new Error(`\u5269\u4F59 ${disk.freeGiB.toFixed(1)} GiB\uFF0C\u6263\u9664\u5E76\u53D1\u9884\u7559\u540E ${available.toFixed(1)} GiB\uFF0C\u8981\u6C42\u81F3\u5C11 ${storage.minFreeGiB} GiB`);
+      }
+      candidates3.push({ ...disk, wc, available });
+    } catch (error) {
+      notes.push(`${root}\uFF1A${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  candidates3.sort((a, b) => b.available - a.available);
+  if (!candidates3.length) throw new Error(`\u6CA1\u6709\u53EF\u7528\u7684\u69FD\u4F4D\u5B58\u50A8\u76EE\u5F55\uFF08${id}\uFF09\uFF1A
+${notes.join("\n")}
+\u8BF7\u68C0\u67E5 [storage].roots \u4E0E minFreeGiB\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u56DE\u9000\u5230\u672A\u914D\u7F6E\u7684\u78C1\u76D8`);
+  return candidates3[0].wc;
+}
+function checkCreationSpace(wc, minFreeGiB) {
+  assertStorageParent(wc);
+  const disk = inspectStorage(path11.dirname(wc));
+  if (disk.freeGiB < minFreeGiB) {
+    throw new Error(`\u69FD\u4F4D ${wc} \u5269\u4F59 ${disk.freeGiB.toFixed(1)} GiB\uFF0C\u65B0\u5EFA\u8981\u6C42\u81F3\u5C11 ${minFreeGiB} GiB\uFF1B\u672A\u5F00\u59CB\u68C0\u51FA`);
+  }
+}
+
 // packs/workingCopyPool/src/pool.ts
 function openPool(ctx, now = () => /* @__PURE__ */ new Date()) {
-  const root = path11.resolve(ctx.cwd);
+  const root = path12.resolve(ctx.cwd);
   const config = loadConfig(root);
   const paths = poolPaths(root);
   ensureLayout(paths);
@@ -3266,13 +3404,19 @@ function viewSlots(pool, state) {
     lastUsed: slot.lastUsed ?? null,
     behind: typeof slot.behind === "number" ? slot.behind : null,
     blockedReason: slot.blockedReason ?? null,
-    path: slotDir(pool.paths, slot.id),
+    path: slotDir(pool.paths, slot),
     link: slot.branch ? branchLink(pool.paths, slot.branch) : null,
     target: slot.op?.target ?? null
   }));
 }
 function poolView(pool, state) {
-  return { root: pool.root, maxSlots: pool.config.maxSlots, resident: pool.config.resident, slots: viewSlots(pool, state) };
+  return {
+    root: pool.root,
+    maxSlots: pool.config.maxSlots,
+    resident: pool.config.resident,
+    storage: { ...pool.config.storage, roots: pool.config.storage.roots.length ? pool.config.storage.roots : [pool.paths.slots] },
+    slots: viewSlots(pool, state)
+  };
 }
 var STATE_TEXT = {
   occupied: "\u5360\u7528",
@@ -3294,7 +3438,7 @@ function describeSlot(view, now) {
 }
 async function releaseSlotOccupants(pool, wc) {
   if (process.platform !== "win32" || !existsSync8(wc)) return void 0;
-  stage(pool, `\u91CA\u653E ${path11.basename(wc)} \u7684\u5360\u7528`);
+  stage(pool, `\u91CA\u653E ${path12.basename(wc)} \u7684\u5360\u7528`);
   const prepared = await prepareExclusiveAccess({ target: wc, abortSignal: pool.ctx.abortSignal, includeUnityByName: false });
   if (prepared.remaining.length > 0) {
     throw new Error(`\u65E0\u6CD5\u91CA\u653E\u5360\u7528\uFF1A${prepared.remaining.map((o) => `${o.name}(${o.pid})`).join(", ")}\uFF0C\u8BF7\u5148\u5173\u95ED\u540E\u518D\u8BD5`);
@@ -3315,7 +3459,7 @@ async function dropLink(pool, link, wc, notes) {
 function restoreLink(pool, slot) {
   if (!slot.branch) return;
   try {
-    createLink(slotDir(pool.paths, slot.id), branchLink(pool.paths, slot.branch));
+    createLink(slotDir(pool.paths, slot), branchLink(pool.paths, slot.branch));
   } catch (error) {
     appendLog(pool.ctx.logFile, `[workingCopyPool] \u6062\u590D\u94FE\u63A5\u5931\u8D25 ${slot.branch}: ${String(error)}`);
   }
@@ -3350,6 +3494,7 @@ async function recover(pool) {
         if (slot && ourOp(slot)) {
           slot.phase = "blocked";
           slot.blockedReason = `\u4E2D\u65AD\u6062\u590D\u5931\u8D25\uFF1A${message}`;
+          if (error instanceof StorageOwnershipError) slot.ownershipUnconfirmed = true;
           slot.op = void 0;
         }
       });
@@ -3359,7 +3504,12 @@ async function recover(pool) {
   return notes;
 }
 async function recoverSlot(pool, id, op, branch) {
-  const wc = slotDir(pool.paths, id);
+  const slot = findSlot(readState(pool.paths), id);
+  const wc = slotDir(pool.paths, slot);
+  if (slot.path) assertStorageParent(wc);
+  if (slot.path && op.kind === "create" && !op.created && existsSync8(wc)) {
+    throw new StorageOwnershipError(`\u65B0\u5EFA\u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4\uFF1A${wc}\uFF1B\u4FDD\u7559\u76EE\u5F55\u4E0E\u69FD\u4F4D\u8BB0\u5F55\uFF0C\u8BF7\u4EBA\u5DE5\u68C0\u67E5`);
+  }
   const sctx = svnCtx(pool);
   const removeSlot = async (why) => {
     if (existsSync8(wc)) rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
@@ -3369,11 +3519,11 @@ async function recoverSlot(pool, id, op, branch) {
     return `${id} ${why}\uFF0C\u5DF2\u5220\u9664\u69FD\u4F4D`;
   };
   if (op.kind === "delete") return removeSlot("\u5220\u9664\u4E2D\u65AD");
-  if (!existsSync8(path11.join(wc, ".svn"))) return removeSlot(op.kind === "create" ? "\u65B0\u5EFA\u4E2D\u65AD" : "\u5DE5\u4F5C\u526F\u672C\u7F3A\u5931");
+  if (!existsSync8(path12.join(wc, ".svn"))) return removeSlot(op.kind === "create" ? "\u65B0\u5EFA\u4E2D\u65AD" : "\u5DE5\u4F5C\u526F\u672C\u7F3A\u5931");
   if (await svnBusy(wc, pool.ctx.abortSignal)) {
     await mutate(pool.paths, (state) => {
-      const slot = state.slots.find((s) => s.id === id);
-      if (slot && ourOp(slot)) slot.op = op;
+      const slot2 = state.slots.find((s) => s.id === id);
+      if (slot2 && ourOp(slot2)) slot2.op = op;
     });
     return `${id} \u6709 svn \u8FDB\u7A0B\u6B63\u5728\u64CD\u4F5C\uFF0C\u6682\u4E0D\u6062\u590D`;
   }
@@ -3396,13 +3546,13 @@ async function recoverSlot(pool, id, op, branch) {
     await applySparse(sctx, wc, pool.config.sparse);
   }
   const done = await mutate(pool.paths, (state) => {
-    const slot = findSlot(state, id);
-    if (!ourOp(slot)) return false;
-    slot.url = info.url;
-    slot.branch = complete ? target : st.incomplete ? "" : actual;
-    slot.phase = "ready";
-    slot.blockedReason = void 0;
-    slot.op = void 0;
+    const slot2 = findSlot(state, id);
+    if (!ourOp(slot2)) return false;
+    slot2.url = info.url;
+    slot2.branch = complete ? target : st.incomplete ? "" : actual;
+    slot2.phase = "ready";
+    slot2.blockedReason = void 0;
+    slot2.op = void 0;
     return true;
   });
   if (!done) return `${id} \u5DF2\u88AB\u5176\u4ED6\u8FDB\u7A0B\u63A5\u624B`;
@@ -3411,7 +3561,7 @@ async function recoverSlot(pool, id, op, branch) {
   complete = complete && Boolean(fresh.branch);
   return complete ? `${id} \u4E2D\u65AD\u524D\u5DF2\u5B8C\u6210 ${target}\uFF0C\u5DF2\u8865\u5EFA\u5165\u53E3` : `${id} \u4E2D\u65AD\u65F6\u672A\u5B8C\u6210${target ? ` ${target}` : ""}\uFF0C\u5F53\u524D ${fresh.branch || "\u72B6\u6001\u4E0D\u660E"}\uFF0C\u4E0B\u6B21\u5360\u7528\u65F6\u91CD\u65B0\u5207\u6362`;
 }
-function claimSlot(state, config, branch, lease, now, excluded = /* @__PURE__ */ new Set()) {
+function claimSlot(state, config, branch, lease, now, excluded = /* @__PURE__ */ new Set(), allocate) {
   const existing = state.slots.find((s) => s.branch === branch && (s.phase === "ready" || s.phase === "blocked") && !s.op);
   if (existing) {
     if (lease) existing.lease = laterLease(leaseActive(existing.lease, now) ? existing.lease : null, lease);
@@ -3430,6 +3580,7 @@ function claimSlot(state, config, branch, lease, now, excluded = /* @__PURE__ */
   }
   if (state.slots.length < config.maxSlots) {
     const slot = { id: nextSlotId(state), branch: "", url: "", phase: "switching", lease: null, op: op("create") };
+    if (allocate) slot.path = allocate(slot.id);
     state.slots.push(slot);
     return { kind: "create", slot: { ...slot } };
   }
@@ -3456,11 +3607,20 @@ async function obtain(pool, branch, lease) {
   const skipped = /* @__PURE__ */ new Set();
   for (; ; ) {
     const now = pool.now();
-    const claim = await mutate(pool.paths, (state) => claimSlot(state, pool.config, branch, lease, now, skipped));
+    const claim = await mutate(pool.paths, (state) => claimSlot(
+      state,
+      pool.config,
+      branch,
+      lease,
+      now,
+      skipped,
+      (id) => selectSlotPath(pool.paths, state, id, pool.config.storage)
+    ));
     if (claim.kind === "full") throw new Error(describeFull(pool, claim.slots));
     if (claim.kind === "busy") throw new Error(`${branch} \u6B63\u5728 ${claim.slot.id} \u4E0A\u88AB\u53E6\u4E00\u4E2A\u4EFB\u52A1\u5904\u7406\uFF0C\u7A0D\u540E\u518D\u8BD5`);
     if (claim.kind === "hit") {
-      const wc2 = slotDir(pool.paths, claim.slot.id);
+      const wc2 = slotDir(pool.paths, claim.slot);
+      if (claim.slot.path) assertStorageParent(wc2);
       restoreLink(pool, claim.slot);
       if (claim.slot.phase === "blocked") notes.push(`\u6CE8\u610F\uFF1A${claim.slot.id} \u5904\u4E8E\u963B\u585E\uFF08${claim.slot.blockedReason ?? "\u539F\u56E0\u672A\u8BB0\u5F55"}\uFF09\uFF0C\u8BF7\u5148\u5904\u7406`);
       const behind2 = await behindCount(sctx, wc2).catch(() => void 0);
@@ -3476,7 +3636,7 @@ async function obtain(pool, branch, lease) {
       skipped.add(claim.slot.id);
       continue;
     }
-    const wc = slotDir(pool.paths, claim.slot.id);
+    const wc = slotDir(pool.paths, claim.slot);
     const behind = await behindCount(sctx, wc).catch(() => void 0);
     const done = pool.now();
     await mutate(pool.paths, (state) => {
@@ -3502,7 +3662,7 @@ async function finishCheck(pool, wc, url) {
   return { url: info.url };
 }
 async function switchFlow(pool, claimed, branch, url, notes) {
-  const wc = slotDir(pool.paths, claimed.id);
+  const wc = slotDir(pool.paths, claimed);
   const sctx = svnCtx(pool);
   const from = claimed.branch;
   const back = async (patch) => {
@@ -3513,6 +3673,14 @@ async function switchFlow(pool, claimed, branch, url, notes) {
     const fresh = findSlot(readState(pool.paths), claimed.id);
     restoreLink(pool, fresh);
   };
+  if (claimed.path) {
+    try {
+      assertStorageParent(wc);
+    } catch (error) {
+      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
   stage(pool, `${claimed.id}\uFF1A${from || "(\u672A\u5B9A)"} \u2192 ${branch}`);
   if (from) {
     const link = branchLink(pool.paths, from);
@@ -3561,18 +3729,39 @@ ${error.output}`)) {
   }
 }
 async function createFlow(pool, claimed, branch, url, notes) {
-  const wc = slotDir(pool.paths, claimed.id);
+  const wc = slotDir(pool.paths, claimed);
   const sctx = svnCtx(pool);
-  if (existsSync8(wc)) rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
   const spec = pool.config.sparse;
-  stage(pool, `${claimed.id}\uFF1A\u65B0\u5EFA ${branch}${isFullCheckout(spec) ? "" : `\uFF08${describeSparse(spec)[0]}\uFF09`}`);
+  let created = false;
+  stage(pool, `${claimed.id}\uFF1A\u65B0\u5EFA ${branch}${isFullCheckout(spec) ? "" : `\uFF08${describeSparse(spec)[0]}\uFF09`}\uFF0C\u5B9E\u9645\u76EE\u5F55 ${wc}`);
   try {
+    checkCreationSpace(wc, pool.config.storage.minFreeGiB);
+    mkdirSync7(wc);
+    created = true;
+    await mutate(pool.paths, (state) => {
+      const slot = findSlot(state, claimed.id);
+      if (!ourOp(slot)) throw new Error(`${claimed.id} \u65B0\u5EFA\u64CD\u4F5C\u5DF2\u88AB\u5176\u4ED6\u8FDB\u7A0B\u63A5\u624B`);
+      slot.op.created = true;
+    });
     await sparseCheckout(sctx, url, wc, spec);
     notes.push(`\u65B0\u5EFA\u69FD\u4F4D ${claimed.id}`);
     return await finishCheck(pool, wc, url);
   } catch (error) {
-    if (error instanceof Cancelled) throw error;
-    rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
+    if (error instanceof Cancelled && created) throw error;
+    if (created) {
+      try {
+        assertStorageParent(wc);
+      } catch (storageError) {
+        await mutate(pool.paths, (state) => {
+          const slot = findSlot(state, claimed.id);
+          slot.phase = "blocked";
+          slot.blockedReason = storageError instanceof Error ? storageError.message : String(storageError);
+          slot.op = void 0;
+        });
+        throw storageError;
+      }
+      rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
+    }
     await mutate(pool.paths, (state) => {
       state.slots = state.slots.filter((s) => s.id !== claimed.id);
     });
@@ -3603,14 +3792,23 @@ async function gc2(pool) {
   const report = { recovered: await recover(pool), unblocked: [], blocked: [], retired: [], pendingShrink: [], links: [], patches: 0, errors: [] };
   const sctx = svnCtx(pool);
   for (const slot of readState(pool.paths).slots.filter((s) => s.phase === "blocked" && !s.op)) {
-    const wc = slotDir(pool.paths, slot.id);
+    const wc = slotDir(pool.paths, slot);
     try {
+      if (slot.ownershipUnconfirmed) {
+        report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${slot.blockedReason ?? "\u76EE\u5F55\u6240\u6709\u6743\u9700\u8981\u4EBA\u5DE5\u786E\u8BA4"}`);
+        continue;
+      }
+      if (slot.path) assertStorageParent(wc);
+      const info = await svnInfo(sctx, wc);
+      if (!info) {
+        report.blocked.push(`${slot.id} ${slot.branch}\uFF1A\u5DE5\u4F5C\u526F\u672C\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u4FDD\u7559\u963B\u585E\u4E0E\u8BB0\u5F55`);
+        continue;
+      }
       const st = await svnStatus(sctx, wc);
       if (st.problems.length > 0 || st.wcLocked) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${st.problems.join("\uFF1B") || "\u5DE5\u4F5C\u526F\u672C\u88AB\u9501"}`);
         continue;
       }
-      const info = await svnInfo(sctx, wc);
       await mutate(pool.paths, (state) => {
         const s = state.slots.find((x) => x.id === slot.id);
         if (!s || s.phase !== "blocked" || s.op) return;
@@ -3657,7 +3855,7 @@ async function gc2(pool) {
   return report;
 }
 async function retireSlot(pool, claimed) {
-  const wc = slotDir(pool.paths, claimed.id);
+  const wc = slotDir(pool.paths, claimed);
   const notes = [];
   const back = async (patch) => {
     await mutate(pool.paths, (state) => {
@@ -3666,11 +3864,19 @@ async function retireSlot(pool, claimed) {
     });
     restoreLink(pool, findSlot(readState(pool.paths), claimed.id));
   };
+  if (claimed.path) {
+    try {
+      assertStorageParent(wc);
+    } catch (error) {
+      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
   if (claimed.branch) {
     const link = branchLink(pool.paths, claimed.branch);
     if (linkExists(link) && samePath(linkTarget(link), wc)) await dropLink(pool, link, wc, notes);
   }
-  if (existsSync8(path11.join(wc, ".svn"))) {
+  if (existsSync8(path12.join(wc, ".svn"))) {
     const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(async (error) => {
       if (error instanceof Cancelled) throw error;
       await back({});
@@ -3702,12 +3908,12 @@ function syncLinks(pool) {
   const wanted = /* @__PURE__ */ new Map();
   for (const slot of state.slots) {
     if (!slot.branch || slot.op || slot.phase !== "ready" && slot.phase !== "blocked") continue;
-    wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot.id));
+    wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot));
   }
-  const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s.id)));
+  const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
   if (existsSync8(pool.paths.branch)) {
     for (const name of readdirSync(pool.paths.branch)) {
-      const link = path11.join(pool.paths.branch, name);
+      const link = path12.join(pool.paths.branch, name);
       if (!isLink(link)) continue;
       const target = linkTarget(link);
       const want = wanted.get(name);
@@ -3722,7 +3928,7 @@ function syncLinks(pool) {
     }
   }
   for (const [name, dir] of wanted) {
-    const link = path11.join(pool.paths.branch, name);
+    const link = path12.join(pool.paths.branch, name);
     if (isLink(link) && samePath(linkTarget(link), dir)) continue;
     if (!existsSync8(dir)) continue;
     try {
@@ -3739,12 +3945,12 @@ function prunePatches(pool) {
   let removed = 0;
   if (!existsSync8(pool.paths.patches)) return 0;
   for (const branch of readdirSync(pool.paths.patches)) {
-    const dir = path11.join(pool.paths.patches, branch);
-    if (!statSync3(dir).isDirectory()) continue;
+    const dir = path12.join(pool.paths.patches, branch);
+    if (!statSync4(dir).isDirectory()) continue;
     for (const stamp of readdirSync(dir)) {
-      const entry = path11.join(dir, stamp);
+      const entry = path12.join(dir, stamp);
       try {
-        if (statSync3(entry).mtimeMs < cutoff) {
+        if (statSync4(entry).mtimeMs < cutoff) {
           rmSync3(entry, { recursive: true, force: true });
           removed += 1;
         }
@@ -3795,7 +4001,7 @@ async function refreshOne(pool, branch) {
       throw error;
     }
   }
-  const wc = slotDir(pool.paths, claim.slot.id);
+  const wc = slotDir(pool.paths, claim.slot);
   const sctx = svnCtx(pool);
   stage(pool, `\u66F4\u65B0 ${branch}\uFF08${claim.slot.id}\uFF09`);
   try {
@@ -3836,13 +4042,13 @@ function resolveLease(pool, ttl, tag) {
 }
 
 // packs/workingCopyPool/src/queries.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
-import path12 from "node:path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync8, readFileSync as readFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import path13 from "node:path";
 var LIST_CACHE_MS = 10 * 6e4;
 var LIST_TIMEOUT_MS = 1e4;
 var STATUS_BUDGET_MS = 12e3;
 function peekPool(ctx, now = () => /* @__PURE__ */ new Date()) {
-  const root = path12.resolve(ctx.cwd);
+  const root = path13.resolve(ctx.cwd);
   return { root, paths: poolPaths(root), config: loadConfig(root), ctx, now };
 }
 function readOnlyCtx(pool, timeoutMs) {
@@ -3861,7 +4067,7 @@ function unescape(text) {
   return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
 function cacheFile(pool) {
-  return path12.join(pool.paths.cache, "list-from.json");
+  return path13.join(pool.paths.cache, "list-from.json");
 }
 function cacheKey(config) {
   return JSON.stringify([config.svnRoot, config.branches.listFrom, config.branches.pattern, config.aliases]);
@@ -3877,7 +4083,7 @@ function readCache(pool) {
 }
 function writeCache(pool, entries) {
   try {
-    mkdirSync7(pool.paths.cache, { recursive: true });
+    mkdirSync8(pool.paths.cache, { recursive: true });
     const value = { at: pool.now().toISOString(), key: cacheKey(pool.config), entries };
     writeFileSync6(cacheFile(pool), `${JSON.stringify(value, null, 2)}
 `, "utf8");
@@ -3886,7 +4092,7 @@ function writeCache(pool, entries) {
 }
 async function listRemoteBranches(pool) {
   const dirs = pool.config.branches.listFrom;
-  if (dirs.length === 0 || !existsSync9(path12.join(pool.root, "pool.toml"))) return { entries: [], cached: false };
+  if (dirs.length === 0 || !existsSync9(path13.join(pool.root, "pool.toml"))) return { entries: [], cached: false };
   const cache = readCache(pool);
   if (cache && pool.now().getTime() - Date.parse(cache.at) < LIST_CACHE_MS) return { entries: cache.entries, cached: true };
   const ctx = readOnlyCtx(pool, LIST_TIMEOUT_MS);
@@ -4003,13 +4209,13 @@ async function status2(pool) {
   let skipped = 0;
   for (const slot of view.slots) {
     const left = deadline - Date.now();
-    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync9(path12.join(slotDir(pool.paths, slot.id), ".svn"))) {
+    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync9(path13.join(slot.path, ".svn"))) {
       if (left < 500) skipped += 1;
       changes.set(slot.id, null);
       continue;
     }
     try {
-      const st = await svnStatus(readOnlyCtx(pool, left), slotDir(pool.paths, slot.id), left);
+      const st = await svnStatus(readOnlyCtx(pool, left), slot.path, left);
       changes.set(slot.id, { versioned: st.versioned.length, unversioned: st.unversioned.length, problems: st.problems });
     } catch (error) {
       if (error instanceof Cancelled) throw error;
@@ -4019,7 +4225,8 @@ async function status2(pool) {
   const lines = view.slots.map((v) => {
     const c = changes.get(v.id);
     const text = c ? c.versioned || c.unversioned ? `\uFF0C\u6539\u52A8 ${c.versioned} / \u672A\u7EB3\u7BA1 ${c.unversioned}` : "\uFF0C\u65E0\u6539\u52A8" : "";
-    return `${describeSlot(v, now)}${text}`;
+    return `${describeSlot(v, now)}${text}
+  \u5B9E\u9645\u76EE\u5F55\uFF1A${v.path}`;
   });
   const count = (s) => view.slots.filter((v) => v.state === s).length;
   const summary = `${view.slots.length}/${view.maxSlots} \u4E2A\u69FD\u4F4D\uFF1A\u5360\u7528 ${count("occupied")}\uFF0C\u5E38\u9A7B ${count("resident")}\uFF0C\u7A7A\u95F2 ${count("idle")}${count("blocked") ? `\uFF0C\u963B\u585E ${count("blocked")}` : ""}${count("interrupted") ? `\uFF0C\u4E2D\u65AD ${count("interrupted")}` : ""}`;
@@ -4084,7 +4291,8 @@ async function runAcquire(params, ctx) {
   const summary = acquireSummary(outcome);
   const view = poolView(pool, readState(pool.paths));
   const entry = view.slots.find((s) => s.id === outcome.slot)?.link ?? "";
-  const lines = [summary, `\u5165\u53E3\uFF1A${entry}`];
+  const wc = view.slots.find((s) => s.id === outcome.slot)?.path ?? "";
+  const lines = [summary, `\u5165\u53E3\uFF1A${entry}`, `\u5B9E\u9645\u76EE\u5F55\uFF1A${wc}`];
   if (outcome.notes.length) lines.push(...outcome.notes);
   if (recovered.length) lines.push(`\u4E2D\u65AD\u6062\u590D\uFF1A${recovered.join("\uFF1B")}`);
   return { detail: lines.join("\n"), code: 0, summary, pool: view };
@@ -4121,7 +4329,7 @@ async function runRefresh(ctx) {
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
 async function runCaptureSparse(params, ctx) {
-  const wc = path13.resolve(ctx.cwd, String(params.path));
+  const wc = path14.resolve(ctx.cwd, String(params.path));
   const sctx = { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, logFile: ctx.logFile, abortSignal: ctx.abortSignal, onProgress: ctx.onProgress };
   const info = await svnInfo(sctx, wc);
   if (!info) throw new UsageError(`\u4E0D\u662F svn \u5DE5\u4F5C\u526F\u672C\uFF1A${wc}`);
@@ -4135,11 +4343,15 @@ async function runCaptureSparse(params, ctx) {
 function dryRun(displayName, toolId, params, ctx) {
   const head = `dry-run: ${displayName} ${JSON.stringify(params)}`;
   if (toolId === "capture-sparse") return `${head}
-\u8BFB\u53D6 ${path13.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
-  const root = path13.resolve(ctx.cwd);
-  if (!existsSync10(path13.join(root, CONFIG_FILE))) return head;
+\u8BFB\u53D6 ${path14.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
+  const root = path14.resolve(ctx.cwd);
+  if (!existsSync10(path14.join(root, CONFIG_FILE))) return head;
   const config = loadConfig(root);
   const lines = [head, `\u6C60\u6839 ${root}\uFF0C\u6700\u591A ${config.maxSlots} \u4E2A\u69FD\u4F4D`];
+  if (toolId === "acquire" || toolId === "refresh") {
+    lines.push(config.storage.roots.length ? `\u65B0\u69FD\u4F4D\u5019\u9009\u76EE\u5F55\uFF1A${config.storage.roots.join("\u3001")}\uFF08\u7A7A\u95F4\u6700\u591A\u7684\u5408\u683C\u76EE\u5F55\u4F18\u5148\uFF09` : `\u65B0\u69FD\u4F4D\u76EE\u5F55\uFF1A${path14.join(root, "slots")}`);
+    lines.push(`\u65B0\u5EFA\u51C6\u5165\uFF1A\u81F3\u5C11 ${config.storage.minFreeGiB} GiB \u53EF\u7528\u7A7A\u95F4\uFF1B\u73B0\u6709\u69FD\u4F4D\u4E0D\u642C\u8FC1`);
+  }
   if (toolId === "acquire") {
     lines.push(`\u5206\u652F URL\uFF1A${branchUrl(config, String(params.branch))}`);
     lines.push(`\u4FDD\u7559\uFF1A${typeof params.ttl === "string" && params.ttl ? params.ttl : config.defaultTtl}${params.tag ? `\uFF0C\u6807\u7B7E ${params.tag}` : ""}`);
