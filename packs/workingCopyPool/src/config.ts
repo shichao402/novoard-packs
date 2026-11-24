@@ -19,16 +19,18 @@ export type PoolConfig = {
   sparse: SparseSpec;
   patchRetentionDays: number;
   storage: { roots: string[]; minFreeGiB: number };
+  hooks?: { beforeUpdate?: string[]; retryBlocked: boolean };
 };
 
 export class ConfigError extends UsageError {}
 
 export const CONFIG_FILE = "pool.toml";
 
-const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage"]);
+const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
 const BRANCH_KEYS = new Set(["pattern", "listFrom", "recentDays"]);
 const SPARSE_KEYS = new Set(["exclude", "root", "depth"]);
 const STORAGE_KEYS = new Set(["roots", "minFreeGiB"]);
+const HOOK_KEYS = new Set(["beforeUpdate", "retryBlocked"]);
 
 /** 时长：`30m`、`12h`、`1d`、`2w`，或 `forever`。 */
 export const TTL_RE = /^(\d+)(m|h|d|w)$/;
@@ -161,6 +163,14 @@ export function parseConfig(text: string): PoolConfig {
   }
   const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
 
+  const h = table("hooks", HOOK_KEYS);
+  const beforeUpdate = h.beforeUpdate === undefined ? undefined : strList("hooks", "beforeUpdate", h.beforeUpdate);
+  if (beforeUpdate && (beforeUpdate.length === 0 || beforeUpdate.length > 64 || beforeUpdate.some((v) => /[\u0000-\u001f]/.test(v)))) {
+    fail("hooks", "beforeUpdate", "应为非空命令 argv 数组（最多 64 项，不含控制字符）；不会经过 shell");
+  }
+  if (h.retryBlocked !== undefined && typeof h.retryBlocked !== "boolean") fail("hooks", "retryBlocked", "应为布尔值");
+  if (h.retryBlocked === true && !beforeUpdate) fail("hooks", "retryBlocked", "需同时配置 beforeUpdate，默认不重试阻塞槽位");
+
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
 
@@ -178,6 +188,7 @@ export function parseConfig(text: string): PoolConfig {
     sparse,
     patchRetentionDays,
     storage: { roots: [...new Set(roots.map((p) => path.normalize(p)))], minFreeGiB },
+    ...(raw.hooks !== undefined ? { hooks: { beforeUpdate, retryBlocked: h.retryBlocked === true } } : {}),
   };
 }
 

@@ -1,6 +1,6 @@
 // packs/workingCopyPool/src/index.ts
-import { existsSync as existsSync10 } from "node:fs";
-import path14 from "node:path";
+import { existsSync as existsSync11 } from "node:fs";
+import path15 from "node:path";
 
 // shared/cli.ts
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
@@ -1278,10 +1278,11 @@ function formatSpecToml(spec) {
 var ConfigError = class extends UsageError {
 };
 var CONFIG_FILE = "pool.toml";
-var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage"]);
+var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
 var BRANCH_KEYS = /* @__PURE__ */ new Set(["pattern", "listFrom", "recentDays"]);
 var SPARSE_KEYS = /* @__PURE__ */ new Set(["exclude", "root", "depth"]);
 var STORAGE_KEYS = /* @__PURE__ */ new Set(["roots", "minFreeGiB"]);
+var HOOK_KEYS = /* @__PURE__ */ new Set(["beforeUpdate", "retryBlocked"]);
 var TTL_RE = /^(\d+)(m|h|d|w)$/;
 function isTtl(value) {
   return value === "forever" || TTL_RE.test(value) && Number(value.match(TTL_RE)[1]) > 0;
@@ -1396,6 +1397,13 @@ function parseConfig(text) {
     }
   }
   const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
+  const h = table("hooks", HOOK_KEYS);
+  const beforeUpdate = h.beforeUpdate === void 0 ? void 0 : strList("hooks", "beforeUpdate", h.beforeUpdate);
+  if (beforeUpdate && (beforeUpdate.length === 0 || beforeUpdate.length > 64 || beforeUpdate.some((v) => /[\u0000-\u001f]/.test(v)))) {
+    fail("hooks", "beforeUpdate", "\u5E94\u4E3A\u975E\u7A7A\u547D\u4EE4 argv \u6570\u7EC4\uFF08\u6700\u591A 64 \u9879\uFF0C\u4E0D\u542B\u63A7\u5236\u5B57\u7B26\uFF09\uFF1B\u4E0D\u4F1A\u7ECF\u8FC7 shell");
+  }
+  if (h.retryBlocked !== void 0 && typeof h.retryBlocked !== "boolean") fail("hooks", "retryBlocked", "\u5E94\u4E3A\u5E03\u5C14\u503C");
+  if (h.retryBlocked === true && !beforeUpdate) fail("hooks", "retryBlocked", "\u9700\u540C\u65F6\u914D\u7F6E beforeUpdate\uFF0C\u9ED8\u8BA4\u4E0D\u91CD\u8BD5\u963B\u585E\u69FD\u4F4D");
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
   for (const name of resident) {
@@ -1410,7 +1418,8 @@ function parseConfig(text) {
     aliases,
     sparse,
     patchRetentionDays,
-    storage: { roots: [...new Set(roots.map((p) => path2.normalize(p)))], minFreeGiB }
+    storage: { roots: [...new Set(roots.map((p) => path2.normalize(p)))], minFreeGiB },
+    ...raw.hooks !== void 0 ? { hooks: { beforeUpdate, retryBlocked: h.retryBlocked === true } } : {}
   };
 }
 function normalizeRel(raw) {
@@ -1600,8 +1609,8 @@ var manifest = {
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync7, readdirSync, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
-import path12 from "node:path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, readdirSync, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
+import path13 from "node:path";
 
 // shared/occupants.ts
 import { closeSync, existsSync as existsSync2, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
@@ -1733,6 +1742,9 @@ cwd=${options.cwd}
     if (!proc?.pid) {
       return;
     }
+    if (options.cancelStdin && proc.stdin?.writable) {
+      proc.stdin.end(options.cancelStdin + "\n");
+    }
     killTree(proc, false);
     if (forceTimer) {
       clearTimeout(forceTimer);
@@ -1769,7 +1781,9 @@ cwd=${options.cwd}
       cwd: options.cwd,
       windowsHide: true,
       env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: [options.cancelStdin ? "pipe" : "ignore", "pipe", "pipe"]
+    });
+    proc.stdin?.on("error", () => {
     });
     if (options.lowPriority && proc.pid) {
       spawn(
@@ -3356,9 +3370,42 @@ function checkCreationSpace(wc, minFreeGiB) {
   }
 }
 
+// packs/workingCopyPool/src/hooks.ts
+import { existsSync as existsSync8 } from "node:fs";
+import path12 from "node:path";
+async function runBeforeUpdate(config, ctx, wc) {
+  const argv = config.hooks?.beforeUpdate;
+  if (!argv) return;
+  if (ctx.abortSignal.aborted) throw new Cancelled("\u5DF2\u53D6\u6D88");
+  if (!existsSync8(path12.join(wc, ".svn"))) throw new Error("\u9879\u76EE\u94A9\u5B50\u76EE\u6807\u4E0D\u662F SVN \u5DE5\u4F5C\u526F\u672C\u6839");
+  ctx.onProgress?.(`\u6267\u884C\u9879\u76EE\u66F4\u65B0\u524D\u94A9\u5B50\uFF08${path12.basename(wc)}\uFF09`, null);
+  const result = await runCommand({
+    command: argv[0],
+    args: [...argv.slice(1), "--project-root", wc],
+    cwd: wc,
+    logFile: ctx.logFile,
+    timeoutMs: Math.min(ctx.timeoutMs, 10 * 6e4),
+    abortSignal: ctx.abortSignal,
+    gracefulMs: 6e3,
+    cancelStdin: '{"type":"cancel"}',
+    onStdoutLine: (line) => {
+      try {
+        const frame = JSON.parse(line);
+        if (frame.type === "progress" && typeof frame.message === "string") {
+          ctx.onProgress?.(frame.message, typeof frame.percent === "number" ? frame.percent : null);
+        }
+      } catch {
+      }
+    }
+  }).done;
+  if (ctx.abortSignal.aborted || result.cancelled && !result.timedOut) throw new Cancelled("\u9879\u76EE\u94A9\u5B50\u5DF2\u53D6\u6D88");
+  if (result.timedOut) throw new Error("\u9879\u76EE\u66F4\u65B0\u524D\u94A9\u5B50\u8D85\u65F6\uFF1B\u672A\u6267\u884C svn update");
+  if (result.code !== 0) throw new Error(`\u9879\u76EE\u66F4\u65B0\u524D\u94A9\u5B50\u5931\u8D25\uFF08${result.code}\uFF09\uFF1B\u672A\u6267\u884C svn update\uFF1A${(result.stderr || result.stdout).trim().slice(-2e3)}`);
+}
+
 // packs/workingCopyPool/src/pool.ts
 function openPool(ctx, now = () => /* @__PURE__ */ new Date()) {
-  const root = path12.resolve(ctx.cwd);
+  const root = path13.resolve(ctx.cwd);
   const config = loadConfig(root);
   const paths = poolPaths(root);
   ensureLayout(paths);
@@ -3437,8 +3484,8 @@ function describeSlot(view, now) {
   return parts.join("\uFF0C");
 }
 async function releaseSlotOccupants(pool, wc) {
-  if (process.platform !== "win32" || !existsSync8(wc)) return void 0;
-  stage(pool, `\u91CA\u653E ${path12.basename(wc)} \u7684\u5360\u7528`);
+  if (process.platform !== "win32" || !existsSync9(wc)) return void 0;
+  stage(pool, `\u91CA\u653E ${path13.basename(wc)} \u7684\u5360\u7528`);
   const prepared = await prepareExclusiveAccess({ target: wc, abortSignal: pool.ctx.abortSignal, includeUnityByName: false });
   if (prepared.remaining.length > 0) {
     throw new Error(`\u65E0\u6CD5\u91CA\u653E\u5360\u7528\uFF1A${prepared.remaining.map((o) => `${o.name}(${o.pid})`).join(", ")}\uFF0C\u8BF7\u5148\u5173\u95ED\u540E\u518D\u8BD5`);
@@ -3507,19 +3554,19 @@ async function recoverSlot(pool, id, op, branch) {
   const slot = findSlot(readState(pool.paths), id);
   const wc = slotDir(pool.paths, slot);
   if (slot.path) assertStorageParent(wc);
-  if (slot.path && op.kind === "create" && !op.created && existsSync8(wc)) {
+  if (slot.path && op.kind === "create" && !op.created && existsSync9(wc)) {
     throw new StorageOwnershipError(`\u65B0\u5EFA\u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4\uFF1A${wc}\uFF1B\u4FDD\u7559\u76EE\u5F55\u4E0E\u69FD\u4F4D\u8BB0\u5F55\uFF0C\u8BF7\u4EBA\u5DE5\u68C0\u67E5`);
   }
   const sctx = svnCtx(pool);
   const removeSlot = async (why) => {
-    if (existsSync8(wc)) rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
+    if (existsSync9(wc)) rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
     await mutate(pool.paths, (state) => {
       state.slots = state.slots.filter((s) => s.id !== id);
     });
     return `${id} ${why}\uFF0C\u5DF2\u5220\u9664\u69FD\u4F4D`;
   };
   if (op.kind === "delete") return removeSlot("\u5220\u9664\u4E2D\u65AD");
-  if (!existsSync8(path12.join(wc, ".svn"))) return removeSlot(op.kind === "create" ? "\u65B0\u5EFA\u4E2D\u65AD" : "\u5DE5\u4F5C\u526F\u672C\u7F3A\u5931");
+  if (!existsSync9(path13.join(wc, ".svn"))) return removeSlot(op.kind === "create" ? "\u65B0\u5EFA\u4E2D\u65AD" : "\u5DE5\u4F5C\u526F\u672C\u7F3A\u5931");
   if (await svnBusy(wc, pool.ctx.abortSignal)) {
     await mutate(pool.paths, (state) => {
       const slot2 = state.slots.find((s) => s.id === id);
@@ -3876,7 +3923,7 @@ async function retireSlot(pool, claimed) {
     const link = branchLink(pool.paths, claimed.branch);
     if (linkExists(link) && samePath(linkTarget(link), wc)) await dropLink(pool, link, wc, notes);
   }
-  if (existsSync8(path12.join(wc, ".svn"))) {
+  if (existsSync9(path13.join(wc, ".svn"))) {
     const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(async (error) => {
       if (error instanceof Cancelled) throw error;
       await back({});
@@ -3911,9 +3958,9 @@ function syncLinks(pool) {
     wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot));
   }
   const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
-  if (existsSync8(pool.paths.branch)) {
+  if (existsSync9(pool.paths.branch)) {
     for (const name of readdirSync(pool.paths.branch)) {
-      const link = path12.join(pool.paths.branch, name);
+      const link = path13.join(pool.paths.branch, name);
       if (!isLink(link)) continue;
       const target = linkTarget(link);
       const want = wanted.get(name);
@@ -3928,9 +3975,9 @@ function syncLinks(pool) {
     }
   }
   for (const [name, dir] of wanted) {
-    const link = path12.join(pool.paths.branch, name);
+    const link = path13.join(pool.paths.branch, name);
     if (isLink(link) && samePath(linkTarget(link), dir)) continue;
-    if (!existsSync8(dir)) continue;
+    if (!existsSync9(dir)) continue;
     try {
       createLink(dir, link);
       notes.push(`\u8865\u5EFA\u5165\u53E3 branch/${name}`);
@@ -3943,12 +3990,12 @@ function syncLinks(pool) {
 function prunePatches(pool) {
   const cutoff = pool.now().getTime() - pool.config.patchRetentionDays * 864e5;
   let removed = 0;
-  if (!existsSync8(pool.paths.patches)) return 0;
+  if (!existsSync9(pool.paths.patches)) return 0;
   for (const branch of readdirSync(pool.paths.patches)) {
-    const dir = path12.join(pool.paths.patches, branch);
+    const dir = path13.join(pool.paths.patches, branch);
     if (!statSync4(dir).isDirectory()) continue;
     for (const stamp of readdirSync(dir)) {
-      const entry = path12.join(dir, stamp);
+      const entry = path13.join(dir, stamp);
       try {
         if (statSync4(entry).mtimeMs < cutoff) {
           rmSync3(entry, { recursive: true, force: true });
@@ -3983,8 +4030,10 @@ async function refreshOne(pool, branch) {
     const slot = state.slots.find((s) => s.branch === branch || s.op?.target === branch);
     if (!slot) return { kind: "absent" };
     if (slot.op) return { kind: "skip", why: `${slot.id} \u6B63\u5728\u88AB\u53E6\u4E00\u4E2A\u4EFB\u52A1\u5904\u7406` };
-    if (slot.phase === "blocked") return { kind: "skip", why: `${slot.id} \u963B\u585E\uFF1A${slot.blockedReason ?? ""}` };
-    if (slot.phase !== "ready") return { kind: "skip", why: `${slot.id} ${slot.phase}` };
+    if (slot.ownershipUnconfirmed) return { kind: "skip", why: `${slot.id} \u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4\uFF0C\u9700\u4EBA\u5DE5\u68C0\u67E5` };
+    const retryBlocked = slot.phase === "blocked" && pool.config.hooks?.retryBlocked === true;
+    if (slot.phase === "blocked" && !retryBlocked) return { kind: "skip", why: `${slot.id} \u963B\u585E\uFF1A${slot.blockedReason ?? ""}` };
+    if (slot.phase !== "ready" && !retryBlocked) return { kind: "skip", why: `${slot.id} ${slot.phase}` };
     if (leaseActive(slot.lease, now)) return { kind: "skip", why: `${slot.id} \u88AB\u5360\u7528${describeLease(slot.lease, now)}\uFF0C\u4E0D\u62A2` };
     slot.op = { kind: "update", target: branch, pid: process.pid, at: now.toISOString() };
     return { kind: "update", slot: { ...slot } };
@@ -4005,6 +4054,15 @@ async function refreshOne(pool, branch) {
   const sctx = svnCtx(pool);
   stage(pool, `\u66F4\u65B0 ${branch}\uFF08${claim.slot.id}\uFF09`);
   try {
+    if (claim.slot.path) assertStorageParent(wc);
+    if (pool.config.hooks?.beforeUpdate) {
+      if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\u69FD\u4F4D\uFF0C\u672A\u6267\u884C\u9879\u76EE\u94A9\u5B50");
+      await releaseSlotOccupants(pool, wc);
+      await runBeforeUpdate(pool.config, pool.ctx, wc);
+      const status3 = await svnStatus(sctx, wc);
+      if (status3.problems.length) throw new Error(`\u9879\u76EE\u94A9\u5B50\u540E\u4ECD\u6709\u9700\u8981\u4EBA\u5DE5\u5904\u7406\u7684\u95EE\u9898\uFF1A${status3.problems.join("\uFF1B")}`);
+      if (status3.switched) throw new Error("\u9879\u76EE\u94A9\u5B50\u540E\u4ECD\u6709 switched \u8DEF\u5F84\uFF0C\u4FDD\u7559\u73B0\u573A\uFF0C\u8BF7\u4EBA\u5DE5\u786E\u8BA4\u5206\u652F\u5F52\u5C5E");
+    }
     const result = await svnCheckAndUpdate({
       workingCopy: wc,
       timeoutMs: pool.ctx.timeoutMs,
@@ -4021,6 +4079,8 @@ async function refreshOne(pool, branch) {
       const slot = state.slots.find((s) => s.id === claim.slot.id);
       if (!slot || !ourOp(slot)) return;
       slot.op = void 0;
+      slot.phase = "ready";
+      slot.blockedReason = void 0;
       if (behind !== void 0) slot.behind = behind;
     });
     const last = result.detail.split(/\r?\n/).filter(Boolean).pop() ?? "\u5B8C\u6210";
@@ -4042,13 +4102,13 @@ function resolveLease(pool, ttl, tag) {
 }
 
 // packs/workingCopyPool/src/queries.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync8, readFileSync as readFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
-import path13 from "node:path";
+import { existsSync as existsSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import path14 from "node:path";
 var LIST_CACHE_MS = 10 * 6e4;
 var LIST_TIMEOUT_MS = 1e4;
 var STATUS_BUDGET_MS = 12e3;
 function peekPool(ctx, now = () => /* @__PURE__ */ new Date()) {
-  const root = path13.resolve(ctx.cwd);
+  const root = path14.resolve(ctx.cwd);
   return { root, paths: poolPaths(root), config: loadConfig(root), ctx, now };
 }
 function readOnlyCtx(pool, timeoutMs) {
@@ -4067,7 +4127,7 @@ function unescape(text) {
   return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
 function cacheFile(pool) {
-  return path13.join(pool.paths.cache, "list-from.json");
+  return path14.join(pool.paths.cache, "list-from.json");
 }
 function cacheKey(config) {
   return JSON.stringify([config.svnRoot, config.branches.listFrom, config.branches.pattern, config.aliases]);
@@ -4092,7 +4152,7 @@ function writeCache(pool, entries) {
 }
 async function listRemoteBranches(pool) {
   const dirs = pool.config.branches.listFrom;
-  if (dirs.length === 0 || !existsSync9(path13.join(pool.root, "pool.toml"))) return { entries: [], cached: false };
+  if (dirs.length === 0 || !existsSync10(path14.join(pool.root, "pool.toml"))) return { entries: [], cached: false };
   const cache = readCache(pool);
   if (cache && pool.now().getTime() - Date.parse(cache.at) < LIST_CACHE_MS) return { entries: cache.entries, cached: true };
   const ctx = readOnlyCtx(pool, LIST_TIMEOUT_MS);
@@ -4209,7 +4269,7 @@ async function status2(pool) {
   let skipped = 0;
   for (const slot of view.slots) {
     const left = deadline - Date.now();
-    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync9(path13.join(slot.path, ".svn"))) {
+    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync10(path14.join(slot.path, ".svn"))) {
       if (left < 500) skipped += 1;
       changes.set(slot.id, null);
       continue;
@@ -4329,7 +4389,7 @@ async function runRefresh(ctx) {
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
 async function runCaptureSparse(params, ctx) {
-  const wc = path14.resolve(ctx.cwd, String(params.path));
+  const wc = path15.resolve(ctx.cwd, String(params.path));
   const sctx = { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, logFile: ctx.logFile, abortSignal: ctx.abortSignal, onProgress: ctx.onProgress };
   const info = await svnInfo(sctx, wc);
   if (!info) throw new UsageError(`\u4E0D\u662F svn \u5DE5\u4F5C\u526F\u672C\uFF1A${wc}`);
@@ -4343,13 +4403,13 @@ async function runCaptureSparse(params, ctx) {
 function dryRun(displayName, toolId, params, ctx) {
   const head = `dry-run: ${displayName} ${JSON.stringify(params)}`;
   if (toolId === "capture-sparse") return `${head}
-\u8BFB\u53D6 ${path14.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
-  const root = path14.resolve(ctx.cwd);
-  if (!existsSync10(path14.join(root, CONFIG_FILE))) return head;
+\u8BFB\u53D6 ${path15.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
+  const root = path15.resolve(ctx.cwd);
+  if (!existsSync11(path15.join(root, CONFIG_FILE))) return head;
   const config = loadConfig(root);
   const lines = [head, `\u6C60\u6839 ${root}\uFF0C\u6700\u591A ${config.maxSlots} \u4E2A\u69FD\u4F4D`];
   if (toolId === "acquire" || toolId === "refresh") {
-    lines.push(config.storage.roots.length ? `\u65B0\u69FD\u4F4D\u5019\u9009\u76EE\u5F55\uFF1A${config.storage.roots.join("\u3001")}\uFF08\u7A7A\u95F4\u6700\u591A\u7684\u5408\u683C\u76EE\u5F55\u4F18\u5148\uFF09` : `\u65B0\u69FD\u4F4D\u76EE\u5F55\uFF1A${path14.join(root, "slots")}`);
+    lines.push(config.storage.roots.length ? `\u65B0\u69FD\u4F4D\u5019\u9009\u76EE\u5F55\uFF1A${config.storage.roots.join("\u3001")}\uFF08\u7A7A\u95F4\u6700\u591A\u7684\u5408\u683C\u76EE\u5F55\u4F18\u5148\uFF09` : `\u65B0\u69FD\u4F4D\u76EE\u5F55\uFF1A${path15.join(root, "slots")}`);
     lines.push(`\u65B0\u5EFA\u51C6\u5165\uFF1A\u81F3\u5C11 ${config.storage.minFreeGiB} GiB \u53EF\u7528\u7A7A\u95F4\uFF1B\u73B0\u6709\u69FD\u4F4D\u4E0D\u642C\u8FC1`);
   }
   if (toolId === "acquire") {

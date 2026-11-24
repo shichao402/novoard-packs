@@ -154,6 +154,8 @@ export function runCommand(options: {
   abortSignal?: AbortSignal;
   lowPriority?: boolean;
   gracefulMs?: number;
+  /** 可选的进程外协议取消行；不传时保持原有 stdin=ignore。 */
+  cancelStdin?: string;
   env?: NodeJS.ProcessEnv;
   /** stdout 每个完整行回调一次（用于进度计数），末尾不完整行在进程结束时补发。 */
   onStdoutLine?: (line: string) => void;
@@ -179,6 +181,9 @@ export function runCommand(options: {
   const softKill = (): void => {
     if (!proc?.pid) {
       return;
+    }
+    if (options.cancelStdin && proc.stdin?.writable) {
+      proc.stdin.end(options.cancelStdin + "\n");
     }
     // Try graceful tree terminate first (no /F).
     killTree(proc, false);
@@ -220,8 +225,9 @@ export function runCommand(options: {
       cwd: options.cwd,
       windowsHide: true,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.cancelStdin ? "pipe" : "ignore", "pipe", "pipe"],
     });
+    proc.stdin?.on("error", () => {});
 
     if (options.lowPriority && proc.pid) {
       spawn(

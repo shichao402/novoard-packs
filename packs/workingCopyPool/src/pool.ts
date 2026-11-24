@@ -37,6 +37,7 @@ import {
 import { applySparse, behindCount, Cancelled, isObstruction, sparseCheckout, svn, svnBusy, svnInfo, svnStatus, SvnError, type SvnCtx } from "./svn";
 import { describeSparse, isFullCheckout } from "./sparse";
 import { assertStorageParent, checkCreationSpace, selectSlotPath, StorageOwnershipError } from "./storage";
+import { runBeforeUpdate } from "./hooks";
 
 export type Pool = {
   root: string;
@@ -770,8 +771,10 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
     const slot = state.slots.find((s) => s.branch === branch || s.op?.target === branch);
     if (!slot) return { kind: "absent" as const };
     if (slot.op) return { kind: "skip" as const, why: `${slot.id} 正在被另一个任务处理` };
-    if (slot.phase === "blocked") return { kind: "skip" as const, why: `${slot.id} 阻塞：${slot.blockedReason ?? ""}` };
-    if (slot.phase !== "ready") return { kind: "skip" as const, why: `${slot.id} ${slot.phase}` };
+    if (slot.ownershipUnconfirmed) return { kind: "skip" as const, why: `${slot.id} 目录所有权未确认，需人工检查` };
+    const retryBlocked = slot.phase === "blocked" && pool.config.hooks?.retryBlocked === true;
+    if (slot.phase === "blocked" && !retryBlocked) return { kind: "skip" as const, why: `${slot.id} 阻塞：${slot.blockedReason ?? ""}` };
+    if (slot.phase !== "ready" && !retryBlocked) return { kind: "skip" as const, why: `${slot.id} ${slot.phase}` };
     if (leaseActive(slot.lease, now)) return { kind: "skip" as const, why: `${slot.id} 被占用${describeLease(slot.lease, now)}，不抢` };
     slot.op = { kind: "update", target: branch, pid: process.pid, at: now.toISOString() };
     return { kind: "update" as const, slot: { ...slot } };
@@ -794,6 +797,15 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
   const sctx = svnCtx(pool);
   stage(pool, `更新 ${branch}（${claim.slot.id}）`);
   try {
+    if (claim.slot.path) assertStorageParent(wc);
+    if (pool.config.hooks?.beforeUpdate) {
+      if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("有 SVN 进程正在处理槽位，未执行项目钩子");
+      await releaseSlotOccupants(pool, wc);
+      await runBeforeUpdate(pool.config, pool.ctx, wc);
+      const status = await svnStatus(sctx, wc);
+      if (status.problems.length) throw new Error(`项目钩子后仍有需要人工处理的问题：${status.problems.join("；")}`);
+      if (status.switched) throw new Error("项目钩子后仍有 switched 路径，保留现场，请人工确认分支归属");
+    }
     const result = await svnCheckAndUpdate({
       workingCopy: wc,
       timeoutMs: pool.ctx.timeoutMs,
@@ -810,6 +822,8 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
       const slot = state.slots.find((s) => s.id === claim.slot.id);
       if (!slot || !ourOp(slot)) return;
       slot.op = undefined;
+      slot.phase = "ready";
+      slot.blockedReason = undefined;
       if (behind !== undefined) slot.behind = behind;
     });
     const last = result.detail.split(/\r?\n/).filter(Boolean).pop() ?? "完成";

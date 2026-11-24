@@ -465,6 +465,9 @@ cwd=${options.cwd}
     if (!proc?.pid) {
       return;
     }
+    if (options.cancelStdin && proc.stdin?.writable) {
+      proc.stdin.end(options.cancelStdin + "\n");
+    }
     killTree(proc, false);
     if (forceTimer) {
       clearTimeout(forceTimer);
@@ -501,7 +504,9 @@ cwd=${options.cwd}
       cwd: options.cwd,
       windowsHide: true,
       env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: [options.cancelStdin ? "pipe" : "ignore", "pipe", "pipe"]
+    });
+    proc.stdin?.on("error", () => {
     });
     if (options.lowPriority && proc.pid) {
       spawn(
