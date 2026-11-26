@@ -3,7 +3,7 @@
  * 分支名转目录名、中断判定、candidates 合并去重与缓存、svn 输出解析。不需要 svn。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -217,6 +217,141 @@ describe("空闲推导与选槽位", () => {
   });
 });
 
+describe("持有保护（hold / unhold）", () => {
+  const c = config(`resident = ["s2pub"]\n`);
+  const holds = { "osglauncher:p1": { at: NOW.toISOString(), label: "OSGLauncher 开工", path: "/x/s01" } };
+  const ctxOf = (root: string): ToolRunContext => ({ cwd: root, workspacePath: root, timeoutMs: 5000, logFile: path.join(root, "l"), abortSignal: new AbortController().signal });
+  const makePool = (slots: Slot[], extra = ""): string => {
+    const root = tmp();
+    writeFileSync(path.join(root, "pool.toml"), `${BASE}${extra}`);
+    const paths = poolPaths(root);
+    ensureLayout(paths);
+    for (const s of slots) mkdirSync(path.join(paths.slots, s.id), { recursive: true });
+    writeFileSync(paths.state, JSON.stringify({ version: 1, slots }));
+    return root;
+  };
+  const stateOf = (root: string): PoolState => JSON.parse(readFileSync(poolPaths(root).state, "utf8")) as PoolState;
+  const wcOf = (root: string, id = "s01"): string => path.join(root, "slots", id);
+
+  it("受保护的槽位不算空闲，状态为 held，选槽位时跳过", () => {
+    expect(isIdle(slot({ holds }), c, NOW)).toBe(false);
+    expect(slotState(slot({ holds }), c, NOW)).toBe("held");
+    expect(slotState(slot({ holds, lease: { until: "forever" } }), c, NOW)).toBe("held");
+    expect(slotState(slot({ holds: {} }), c, NOW)).toBe("idle");
+    const state: PoolState = {
+      version: 1,
+      slots: [slot({ id: "s01", branch: "a", lastUsed: "2026-10-01T00:00:00Z", holds }), slot({ id: "s02", branch: "b", lastUsed: "2026-11-01T00:00:00Z" })],
+    };
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "x", null, NOW)).toMatchObject({ kind: "switch", slot: { id: "s02" } });
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "y", null, NOW).kind).toBe("full");
+  });
+
+  it("hold：确认实际目录后建立；同一 holdId 重复调用只刷新", async () => {
+    const root = makePool([slot({ id: "s01", branch: "b1" })]);
+    const ctx = ctxOf(root);
+    const params = { branch: "b1", holdId: "osglauncher:p1", expectedPath: wcOf(root), label: "  OSGLauncher 开工  " };
+    const first = await run("hold", params, ctx);
+    expect(first.code).toBe(0);
+    expect(first.detail).toMatch(/已建立 b1（s01）的保护 osglauncher:p1/);
+    expect(stateOf(root).slots[0].holds).toEqual({ "osglauncher:p1": { at: expect.any(String), label: "OSGLauncher 开工", path: realpathSync.native(wcOf(root)) } });
+    const again = await run("hold", { ...params, label: "OSGLauncher 工程操作" }, ctx);
+    expect(again.detail).toMatch(/已刷新/);
+    expect(Object.keys(stateOf(root).slots[0].holds ?? {})).toEqual(["osglauncher:p1"]);
+    expect(stateOf(root).slots[0].holds?.["osglauncher:p1"].label).toBe("OSGLauncher 工程操作");
+    const status = await run("status", {}, ctx);
+    expect(status.summary).toContain("保护 1");
+    expect(status.detail).toContain("保护中，持有者 OSGLauncher 工程操作（osglauncher:p1）");
+  });
+
+  it("hold 拒绝：目录不符、不在池里、未就绪、参数不合法；都不写入", async () => {
+    const root = makePool([slot({ id: "s01", branch: "b1" }), slot({ id: "s02", branch: "b2", phase: "blocked", blockedReason: "冲突：a" })]);
+    const ctx = ctxOf(root);
+    const base = { branch: "b1", holdId: "h1", expectedPath: wcOf(root) };
+    await expect(run("hold", { ...base, expectedPath: wcOf(root, "s02") }, ctx)).rejects.toThrow(/不一致，未加保护/);
+    await expect(run("hold", { ...base, branch: "zz" }, ctx)).rejects.toThrow(/不在池里/);
+    await expect(run("hold", { ...base, branch: "b2", expectedPath: wcOf(root, "s02") }, ctx)).rejects.toThrow(/未就绪：冲突：a/);
+    await expect(run("hold", { ...base, expectedPath: "slots/s01" }, ctx)).rejects.toBeInstanceOf(UsageError);
+    await expect(run("hold", { ...base, holdId: " h1" }, ctx)).rejects.toBeInstanceOf(UsageError);
+    await expect(run("hold", { ...base, holdId: "" }, ctx)).rejects.toBeInstanceOf(UsageError);
+    expect(stateOf(root).slots.every((s) => !s.holds)).toBe(true);
+  });
+
+  it("unhold：必须确认已关闭；多个持有者互不清除；可重复调用", async () => {
+    const root = makePool([slot({ id: "s01", branch: "b1" })]);
+    const ctx = ctxOf(root);
+    for (const holdId of ["osglauncher:p1", "osgtoolset:operation:42"]) await run("hold", { branch: "b1", holdId, expectedPath: wcOf(root) }, ctx);
+    await expect(run("unhold", { branch: "b1", holdId: "osglauncher:p1" }, ctx)).rejects.toBeInstanceOf(UsageError);
+    await expect(run("unhold", { branch: "b1", holdId: "osglauncher:p1", confirmClosed: false }, { ...ctx, dryRun: true })).rejects.toBeInstanceOf(UsageError);
+    expect(Object.keys(stateOf(root).slots[0].holds ?? {})).toHaveLength(2);
+
+    const one = await run("unhold", { branch: "b1", holdId: "osglauncher:p1", confirmClosed: true }, ctx);
+    expect(one.detail).toMatch(/已解除.*仍有 1 个持有者（osgtoolset:operation:42）/);
+    expect(Object.keys(stateOf(root).slots[0].holds ?? {})).toEqual(["osgtoolset:operation:42"]);
+    const repeat = await run("unhold", { branch: "b1", holdId: "osglauncher:p1", confirmClosed: true }, ctx);
+    expect(repeat.skipped).toBe(true);
+    const last = await run("unhold", { branch: "b1", holdId: "osgtoolset:operation:42", confirmClosed: true }, ctx);
+    expect(last.detail).toContain("槽位已不受保护");
+    expect(stateOf(root).slots[0].holds).toBeUndefined();
+    expect((await run("unhold", { branch: "zz", holdId: "x", confirmClosed: true }, ctx)).skipped).toBe(true);
+  });
+
+  it("租约与保护互相独立：release 不清保护，unhold 只有 releaseLease 才清租约", async () => {
+    const lease = { until: "forever" };
+    const root = makePool([slot({ id: "s01", branch: "b1", lease }), slot({ id: "s02", branch: "b2", lease })]);
+    const ctx = ctxOf(root);
+    await run("hold", { branch: "b1", holdId: "h1", expectedPath: wcOf(root) }, ctx);
+    await run("hold", { branch: "b2", holdId: "h2", expectedPath: wcOf(root, "s02") }, ctx);
+
+    const released = await run("release", { branch: "b1" }, ctx);
+    expect(released.detail).toMatch(/已释放 b1.*仍有持有保护（h1）/);
+    expect(stateOf(root).slots[0]).toMatchObject({ lease: null, holds: { h1: expect.any(Object) } });
+
+    await run("unhold", { branch: "b2", holdId: "h2", confirmClosed: true }, ctx);
+    expect(stateOf(root).slots[1].lease).toEqual(lease);
+    await run("hold", { branch: "b2", holdId: "h2", expectedPath: wcOf(root, "s02") }, ctx);
+    const both = await run("unhold", { branch: "b2", holdId: "h2", confirmClosed: true, releaseLease: true }, ctx);
+    expect(both.detail).toMatch(/已解除.*已释放租约.*槽位已不受保护/);
+    expect(stateOf(root).slots[1]).toMatchObject({ lease: null });
+    expect(stateOf(root).slots[1].holds).toBeUndefined();
+  });
+
+  it("常驻更新跳过受保护槽位；缩容不回收受保护槽位", async () => {
+    const resident = makePool([slot({ id: "s01", branch: "b1", holds })], `resident = ["b1"]\n`);
+    const refreshed = await run("refresh", {}, ctxOf(resident));
+    expect(refreshed.code).toBe(0);
+    expect(refreshed.detail).toMatch(/- b1：跳过：s01 受保护（OSGLauncher 开工（osglauncher:p1））/);
+
+    const ids = ["s01", "s02", "s03", "s04"];
+    const crowded = makePool(ids.map((id, i) => slot({ id, branch: `b${i + 1}`, holds })));
+    const report = await run("gc", {}, ctxOf(crowded));
+    expect(report.detail).toMatch(/还需缩减 1 个槽位，等租约结束、保护解除或阻塞处理后再回收/);
+    expect(stateOf(crowded).slots.map((s) => s.id)).toEqual(ids);
+    for (const id of ids) expect(existsSync(wcOf(crowded, id))).toBe(true);
+  });
+
+  it("dry-run 描述 hold / unhold，不写状态", async () => {
+    const root = makePool([slot({ id: "s01", branch: "b1" })]);
+    const ctx = { ...ctxOf(root), dryRun: true };
+    const dry = await run("hold", { branch: "b1", holdId: "h1", expectedPath: wcOf(root) }, ctx);
+    expect(dry.detail).toContain(`确认 b1 的实际目录是 ${wcOf(root)} 后，以 h1 加保护`);
+    const undry = await run("unhold", { branch: "b1", holdId: "h1", confirmClosed: true, releaseLease: true }, ctx);
+    expect(undry.detail).toContain("解除 b1 上 h1 的保护，并释放租约");
+    expect(stateOf(root).slots[0].holds).toBeUndefined();
+  });
+
+  it("候选提示：受保护槽位写出持有者与租约", () => {
+    const choices = mergeCandidates({
+      views: [{ id: "s01", branch: "b1", state: "held", phase: "ready", lease: { until: "forever", tag: "bug-1" }, lastUsed: null, behind: null, blockedReason: null, path: "", link: null, target: null, holds: [{ id: "osglauncher:p1", ...holds["osglauncher:p1"] }] }],
+      state: { version: 1, slots: [] },
+      config: c,
+      recent: [],
+      remote: [],
+      now: NOW,
+    });
+    expect(choices[0].hint).toBe("受保护（OSGLauncher 开工），已占用永久（bug-1）");
+  });
+});
+
 describe("candidates 与 occupied", () => {
   const c = config(`resident = ["s2pub", "exp"]\n[branches]\nlistFrom = ["branches"]\nrecentDays = 10\n`);
   const view = (over: object) => ({
@@ -231,6 +366,7 @@ describe("candidates 与 occupied", () => {
     path: "",
     link: null,
     target: null,
+    holds: [],
     ...over,
   });
 

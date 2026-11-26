@@ -1571,6 +1571,36 @@ var release = {
   supportsResultJson: true,
   params: [{ name: "branch", type: "string", required: true, label: "\u5206\u652F" }]
 };
+var hold = {
+  id: "hold",
+  displayName: "\u4FDD\u62A4\u5DE5\u4F5C\u526F\u672C",
+  description: "\u5916\u90E8\u5E94\u7528\u6B63\u5728\u4F7F\u7528\u8BE5\u5206\u652F\u7684\u5DE5\u4F5C\u526F\u672C\u65F6\u52A0\u4FDD\u62A4\uFF1A\u4E0D\u968F\u79DF\u7EA6\u5230\u671F\u6216\u8FDB\u7A0B\u9000\u51FA\u5931\u6548\uFF0C\u5207\u6362\u3001\u7F29\u5BB9\u3001\u5E38\u9A7B\u66F4\u65B0\u90FD\u4F1A\u8DF3\u8FC7\uFF1B\u53EA\u80FD\u7528\u540C\u4E00 holdId \u7684 unhold \u89E3\u9664\uFF0C\u591A\u4E2A\u6301\u6709\u8005\u4E92\u4E0D\u5F71\u54CD",
+  kind: "action",
+  idempotent: true,
+  supportsDryRun: true,
+  supportsResultJson: true,
+  params: [
+    { name: "branch", type: "string", required: true, label: "\u5206\u652F" },
+    { name: "holdId", type: "string", required: true, label: "\u6301\u6709\u8005 ID", description: "\u8C03\u7528\u65B9\u81EA\u5B9A\u7684\u7A33\u5B9A\u6807\u8BC6\uFF0C\u5982 osglauncher:<\u9879\u76EE>\uFF1B\u540C\u4E00 ID \u91CD\u590D\u4FDD\u62A4\u53EA\u5237\u65B0\u65F6\u95F4" },
+    { name: "expectedPath", type: "string", required: true, label: "\u786E\u8BA4\u7684\u76EE\u5F55", description: "\u8C03\u7528\u65B9\u770B\u5230\u7684\u5DE5\u4F5C\u526F\u672C\u5B9E\u9645\u76EE\u5F55\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF1B\u4E0E\u6C60\u91CC\u4E0D\u4E00\u81F4\u65F6\u62D2\u7EDD\uFF0C\u907F\u514D\u4FDD\u62A4\u9519\u69FD\u4F4D" },
+    { name: "label", type: "string", label: "\u8BF4\u660E", description: "\u7ED9\u4EBA\u770B\u7684\u6301\u6709\u8005\u8BF4\u660E\uFF0C\u5982 OSGLauncher \u5F00\u5DE5" }
+  ]
+};
+var unhold = {
+  id: "unhold",
+  displayName: "\u89E3\u9664\u4FDD\u62A4",
+  description: "\u89E3\u9664\u6307\u5B9A holdId \u7684\u4FDD\u62A4\uFF0C\u5176\u4ED6\u6301\u6709\u8005\u4E0D\u53D7\u5F71\u54CD\uFF1B\u987B\u786E\u8BA4\u7528\u5230\u8BE5\u5DE5\u4F5C\u526F\u672C\u7684\u5E94\u7528\u5DF2\u5173\u95ED\uFF0C\u53EF\u987A\u5E26\u91CA\u653E\u79DF\u7EA6",
+  kind: "action",
+  idempotent: true,
+  supportsDryRun: true,
+  supportsResultJson: true,
+  params: [
+    { name: "branch", type: "string", required: true, label: "\u5206\u652F" },
+    { name: "holdId", type: "string", required: true, label: "\u6301\u6709\u8005 ID", description: "\u4E0E hold \u65F6\u9010\u5B57\u4E00\u81F4" },
+    { name: "confirmClosed", type: "boolean", default: false, label: "\u5DF2\u5173\u95ED\u76F8\u5173\u5E94\u7528", description: "\u5FC5\u987B\u4E3A true\uFF1A\u786E\u8BA4 IDE\u3001\u7F16\u8F91\u5668\u7B49\u7528\u5230\u8BE5\u76EE\u5F55\u7684\u5E94\u7528\u5DF2\u5173\u95ED" },
+    { name: "releaseLease", type: "boolean", default: false, label: "\u540C\u65F6\u91CA\u653E\u79DF\u7EA6", description: "\u7B49\u540C\u518D\u8C03\u7528\u4E00\u6B21 release" }
+  ]
+};
 var gc = {
   id: "gc",
   displayName: "\u6C60\u56DE\u6536",
@@ -1605,11 +1635,11 @@ var manifest = {
   schemaVersion: 1,
   runtime: "node",
   entry: "dist/pack.mjs",
-  tools: [candidates, occupied, status, acquire, release, gc, refresh, captureSparse]
+  tools: [candidates, occupied, status, acquire, release, hold, unhold, gc, refresh, captureSparse]
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readdirSync, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, readdirSync, realpathSync as realpathSync3, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
 import path13 from "node:path";
 
 // shared/occupants.ts
@@ -2824,8 +2854,11 @@ function leaseActive(lease, now) {
 function isResident(slot, config) {
   return Boolean(slot.branch) && config.resident.includes(slot.branch);
 }
+function isHeld(slot) {
+  return Boolean(slot.holds) && Object.keys(slot.holds).length > 0;
+}
 function isIdle(slot, config, now) {
-  return slot.phase === "ready" && !isResident(slot, config) && !leaseActive(slot.lease, now);
+  return slot.phase === "ready" && !isResident(slot, config) && !leaseActive(slot.lease, now) && !isHeld(slot);
 }
 function isInterrupted(slot) {
   return Boolean(slot.op) && !pidAlive(slot.op.pid);
@@ -3436,9 +3469,17 @@ function slotState(slot, config, now) {
   if (slot.phase === "switching") return "switching";
   if (slot.phase === "retiring") return "retiring";
   if (slot.phase === "blocked") return "blocked";
+  if (isHeld(slot)) return "held";
   if (leaseActive(slot.lease, now)) return "occupied";
   if (isResident(slot, config)) return "resident";
   return "idle";
+}
+function holdList(slot) {
+  return Object.entries(slot.holds ?? {}).map(([id, hold2]) => ({ id, ...hold2 })).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+}
+function holdNames(slot) {
+  const list = Array.isArray(slot.holds) ? slot.holds : holdList(slot);
+  return list.map((h) => h.label ? `${h.label}\uFF08${h.id}\uFF09` : h.id).join("\u3001");
 }
 function viewSlots(pool, state) {
   const now = pool.now();
@@ -3453,7 +3494,8 @@ function viewSlots(pool, state) {
     blockedReason: slot.blockedReason ?? null,
     path: slotDir(pool.paths, slot),
     link: slot.branch ? branchLink(pool.paths, slot.branch) : null,
-    target: slot.op?.target ?? null
+    target: slot.op?.target ?? null,
+    holds: holdList(slot)
   }));
 }
 function poolView(pool, state) {
@@ -3467,6 +3509,7 @@ function poolView(pool, state) {
 }
 var STATE_TEXT = {
   occupied: "\u5360\u7528",
+  held: "\u4FDD\u62A4\u4E2D",
   resident: "\u5E38\u9A7B",
   idle: "\u7A7A\u95F2",
   switching: "\u5207\u6362\u4E2D",
@@ -3476,6 +3519,7 @@ var STATE_TEXT = {
 };
 function describeSlot(view, now) {
   const parts = [`${view.id} ${view.branch || "(\u672A\u5B9A)"}`, STATE_TEXT[view.state]];
+  if (view.holds.length) parts.push(`\u6301\u6709\u8005 ${holdNames(view)}`);
   if (view.lease) parts.push(`\u79DF\u7EA6${describeLease(view.lease, now)}`);
   if (view.target && (view.state === "switching" || view.state === "interrupted")) parts.push(`\u2192 ${view.target}`);
   if (view.behind !== null && view.behind > 0) parts.push(`\u843D\u540E ${view.behind}`);
@@ -3825,14 +3869,79 @@ async function releaseBranch(pool, branch) {
   const result = await mutate(pool.paths, (state) => {
     const slot = state.slots.find((s) => s.branch === branch);
     if (!slot) return { released: false, detail: `${branch} \u4E0D\u5728\u6C60\u91CC` };
+    const held = isHeld(slot) ? `\uFF1B\u4ECD\u6709\u6301\u6709\u4FDD\u62A4\uFF08${holdNames(slot)}\uFF09\uFF0C\u69FD\u4F4D\u4E0D\u4F1A\u88AB\u5207\u6362\u6216\u56DE\u6536` : "";
     if (!leaseActive(slot.lease, now)) {
       slot.lease = null;
-      return { released: false, slot: slot.id, detail: `${branch}\uFF08${slot.id}\uFF09\u6CA1\u6709\u6709\u6548\u79DF\u7EA6` };
+      return { released: false, slot: slot.id, detail: `${branch}\uFF08${slot.id}\uFF09\u6CA1\u6709\u6709\u6548\u79DF\u7EA6${held}` };
     }
     slot.lease = null;
-    return { released: true, slot: slot.id, detail: `\u5DF2\u91CA\u653E ${branch}\uFF08${slot.id}\uFF09\uFF0C\u5DE5\u4F5C\u526F\u672C\u7559\u5728\u539F\u5206\u652F` };
+    return { released: true, slot: slot.id, detail: `\u5DF2\u91CA\u653E ${branch}\uFF08${slot.id}\uFF09\uFF0C\u5DE5\u4F5C\u526F\u672C\u7559\u5728\u539F\u5206\u652F${held}` };
   });
   if (result.released) appendHistory(pool.paths, { at: now.toISOString(), action: "release", branch, slot: result.slot });
+  return result;
+}
+function checkHoldId(value) {
+  const id = typeof value === "string" ? value : "";
+  if (!id || id !== id.trim() || id.length > 200 || /[\u0000-\u001f\u007f]/.test(id)) {
+    throw new UsageError(`holdId \u4E0D\u5408\u6CD5\uFF1A${JSON.stringify(value)}\uFF081\u2013200 \u4E2A\u53EF\u89C1\u5B57\u7B26\uFF0C\u9996\u5C3E\u4E0D\u80FD\u6709\u7A7A\u767D\uFF09`);
+  }
+  return id;
+}
+function realPath(p) {
+  try {
+    return realpathSync3.native(p);
+  } catch {
+    return void 0;
+  }
+}
+async function holdSlot(pool, branch, holdId, expectedPath, label) {
+  if (!path13.isAbsolute(expectedPath)) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${expectedPath}`);
+  const now = pool.now();
+  return mutate(pool.paths, (state) => {
+    const slot = state.slots.find((s) => s.branch === branch);
+    if (!slot) throw new Error(`${branch} \u4E0D\u5728\u6C60\u91CC\uFF0C\u8BF7\u5148\u5360\u7528\uFF08acquire\uFF09\u518D\u4FDD\u62A4`);
+    if (slot.op || slot.phase !== "ready") {
+      throw new Error(`${branch}\uFF08${slot.id}\uFF09\u672A\u5C31\u7EEA\uFF1A${slot.op ? "\u6B63\u5728\u88AB\u53E6\u4E00\u4E2A\u4EFB\u52A1\u5904\u7406" : slot.blockedReason ?? slot.phase}\uFF0C\u4E0D\u80FD\u4FDD\u62A4`);
+    }
+    const wc = slotDir(pool.paths, slot);
+    const actual = realPath(wc);
+    if (!actual) throw new Error(`${branch}\uFF08${slot.id}\uFF09\u7684\u5B9E\u9645\u76EE\u5F55\u4E0D\u5B58\u5728\uFF1A${wc}`);
+    if (!samePath(actual, realPath(expectedPath) ?? expectedPath)) {
+      throw new Error(`${branch} \u73B0\u5728\u4F4D\u4E8E ${slot.id}\uFF08${actual}\uFF09\uFF0C\u4E0E\u8C03\u7528\u65B9\u786E\u8BA4\u7684 ${expectedPath} \u4E0D\u4E00\u81F4\uFF0C\u672A\u52A0\u4FDD\u62A4\uFF1B\u8BF7\u5237\u65B0\u540E\u91CD\u65B0\u786E\u8BA4`);
+    }
+    const holds = slot.holds ?? {};
+    const renewed = Object.prototype.hasOwnProperty.call(holds, holdId);
+    holds[holdId] = { at: now.toISOString(), path: actual, ...label ? { label } : {} };
+    slot.holds = holds;
+    slot.lastUsed = now.toISOString();
+    const holders = Object.keys(holds).length;
+    return {
+      slot: slot.id,
+      renewed,
+      holders,
+      detail: `${renewed ? "\u5DF2\u5237\u65B0" : "\u5DF2\u5EFA\u7ACB"} ${branch}\uFF08${slot.id}\uFF09\u7684\u4FDD\u62A4 ${holdId}\uFF1B\u5F53\u524D ${holders} \u4E2A\u6301\u6709\u8005\uFF0C\u5207\u6362\u3001\u7F29\u5BB9\u3001\u5E38\u9A7B\u66F4\u65B0\u90FD\u4F1A\u8DF3\u8FC7\u8FD9\u4E2A\u69FD\u4F4D`
+    };
+  });
+}
+async function unholdSlot(pool, branch, holdId, confirmClosed, releaseLease) {
+  if (!confirmClosed) throw new UsageError("\u89E3\u9664\u4FDD\u62A4\u524D\u987B\u786E\u8BA4\u7528\u5230\u8BE5\u5DE5\u4F5C\u526F\u672C\u7684\u5E94\u7528\u5DF2\u5173\u95ED\uFF08--confirm-closed\uFF09");
+  const now = pool.now();
+  const result = await mutate(pool.paths, (state) => {
+    const slot = state.slots.find((s) => s.branch === branch);
+    if (!slot) return { removed: false, leaseReleased: false, holders: 0, detail: `${branch} \u4E0D\u5728\u6C60\u91CC\uFF0C\u65E0\u9700\u89E3\u9664` };
+    const holds = slot.holds ?? {};
+    const removed = Object.prototype.hasOwnProperty.call(holds, holdId);
+    if (removed) delete holds[holdId];
+    slot.holds = Object.keys(holds).length ? holds : void 0;
+    const leaseReleased = releaseLease && leaseActive(slot.lease, now);
+    if (releaseLease) slot.lease = null;
+    const holders = Object.keys(holds).length;
+    const parts = [removed ? `\u5DF2\u89E3\u9664 ${branch}\uFF08${slot.id}\uFF09\u7684\u4FDD\u62A4 ${holdId}` : `${branch}\uFF08${slot.id}\uFF09\u4E0A\u6CA1\u6709 ${holdId} \u7684\u4FDD\u62A4`];
+    if (releaseLease) parts.push(leaseReleased ? "\u5DF2\u91CA\u653E\u79DF\u7EA6" : "\u6CA1\u6709\u6709\u6548\u79DF\u7EA6");
+    parts.push(holders ? `\u4ECD\u6709 ${holders} \u4E2A\u6301\u6709\u8005\uFF08${holdNames(slot)}\uFF09\uFF0C\u7EE7\u7EED\u53D7\u4FDD\u62A4` : "\u69FD\u4F4D\u5DF2\u4E0D\u53D7\u4FDD\u62A4");
+    return { slot: slot.id, removed, leaseReleased, holders, detail: parts.join("\uFF1B") };
+  });
+  if (result.leaseReleased) appendHistory(pool.paths, { at: now.toISOString(), action: "release", branch, slot: result.slot });
   return result;
 }
 async function gc2(pool) {
@@ -3886,7 +3995,7 @@ async function gc2(pool) {
     });
     if (!pick) break;
     if ("none" in pick) {
-      report.pendingShrink.push(`\u8FD8\u9700\u7F29\u51CF ${pick.none} \u4E2A\u69FD\u4F4D\uFF0C\u7B49\u79DF\u7EA6\u7ED3\u675F\u6216\u963B\u585E\u5904\u7406\u540E\u518D\u56DE\u6536`);
+      report.pendingShrink.push(`\u8FD8\u9700\u7F29\u51CF ${pick.none} \u4E2A\u69FD\u4F4D\uFF0C\u7B49\u79DF\u7EA6\u7ED3\u675F\u3001\u4FDD\u62A4\u89E3\u9664\u6216\u963B\u585E\u5904\u7406\u540E\u518D\u56DE\u6536`);
       break;
     }
     tried.add(pick.slot.id);
@@ -4030,6 +4139,7 @@ async function refreshOne(pool, branch) {
     const slot = state.slots.find((s) => s.branch === branch || s.op?.target === branch);
     if (!slot) return { kind: "absent" };
     if (slot.op) return { kind: "skip", why: `${slot.id} \u6B63\u5728\u88AB\u53E6\u4E00\u4E2A\u4EFB\u52A1\u5904\u7406` };
+    if (isHeld(slot)) return { kind: "skip", why: `${slot.id} \u53D7\u4FDD\u62A4\uFF08${holdNames(slot)}\uFF09\uFF0C\u4E0D\u66F4\u65B0` };
     if (slot.ownershipUnconfirmed) return { kind: "skip", why: `${slot.id} \u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4\uFF0C\u9700\u4EBA\u5DE5\u68C0\u67E5` };
     const retryBlocked = slot.phase === "blocked" && pool.config.hooks?.retryBlocked === true;
     if (slot.phase === "blocked" && !retryBlocked) return { kind: "skip", why: `${slot.id} \u963B\u585E\uFF1A${slot.blockedReason ?? ""}` };
@@ -4185,6 +4295,10 @@ function slotHint(view, now) {
     case "resident":
       parts.push("\u5E38\u9A7B\uFF0C\u5C31\u7EEA");
       break;
+    case "held":
+      parts.push(`\u53D7\u4FDD\u62A4\uFF08${view.holds.map((h) => h.label ?? h.id).join("\u3001")}\uFF09`);
+      if (view.lease) parts.push(`\u5DF2\u5360\u7528${describeLease(view.lease, now)}`);
+      break;
     case "idle":
       parts.push("\u5C31\u7EEA");
       break;
@@ -4289,7 +4403,7 @@ async function status2(pool) {
   \u5B9E\u9645\u76EE\u5F55\uFF1A${v.path}`;
   });
   const count = (s) => view.slots.filter((v) => v.state === s).length;
-  const summary = `${view.slots.length}/${view.maxSlots} \u4E2A\u69FD\u4F4D\uFF1A\u5360\u7528 ${count("occupied")}\uFF0C\u5E38\u9A7B ${count("resident")}\uFF0C\u7A7A\u95F2 ${count("idle")}${count("blocked") ? `\uFF0C\u963B\u585E ${count("blocked")}` : ""}${count("interrupted") ? `\uFF0C\u4E2D\u65AD ${count("interrupted")}` : ""}`;
+  const summary = `${view.slots.length}/${view.maxSlots} \u4E2A\u69FD\u4F4D\uFF1A\u5360\u7528 ${count("occupied")}\uFF0C\u5E38\u9A7B ${count("resident")}\uFF0C\u7A7A\u95F2 ${count("idle")}${count("held") ? `\uFF0C\u4FDD\u62A4 ${count("held")}` : ""}${count("blocked") ? `\uFF0C\u963B\u585E ${count("blocked")}` : ""}${count("interrupted") ? `\uFF0C\u4E2D\u65AD ${count("interrupted")}` : ""}`;
   const missingResident = view.resident.filter((b) => !view.slots.some((v) => v.branch === b));
   if (missingResident.length) lines.push(`\u5E38\u9A7B\u5206\u652F\u4E0D\u5728\u6C60\u91CC\uFF1A${missingResident.join("\u3001")}\uFF08\u4E0B\u6B21 refresh \u51C6\u5907\uFF09`);
   if (skipped) lines.push(`${skipped} \u4E2A\u69FD\u4F4D\u8D85\u51FA\u7EDF\u8BA1\u65F6\u95F4\uFF0C\u672A\u8BFB\u6539\u52A8`);
@@ -4311,6 +4425,9 @@ async function run(toolId, rawParams, ctx) {
   if (typeof params.ttl === "string" && params.ttl.trim() && params.ttl.trim() !== "forever" && !isTtl(params.ttl.trim())) {
     throw new UsageError(`ttl \u4E0D\u5408\u6CD5\uFF1A${params.ttl}\uFF08\u5982 12h\u30011d\u30013d\u30011w \u6216 forever\uFF09`);
   }
+  if (toolId === "hold" || toolId === "unhold") checkHoldId(params.holdId);
+  if (toolId === "hold" && !path15.isAbsolute(String(params.expectedPath))) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${params.expectedPath}`);
+  if (toolId === "unhold" && params.confirmClosed !== true) throw new UsageError("\u89E3\u9664\u4FDD\u62A4\u524D\u987B\u786E\u8BA4\u7528\u5230\u8BE5\u5DE5\u4F5C\u526F\u672C\u7684\u5E94\u7528\u5DF2\u5173\u95ED\uFF08--confirm-closed\uFF09");
   if (ctx.dryRun) return { detail: dryRun(tool.displayName, toolId, params, ctx), code: 0 };
   switch (toolId) {
     case "candidates": {
@@ -4331,6 +4448,23 @@ async function run(toolId, rawParams, ctx) {
       const pool = openPool(ctx);
       const result = await releaseBranch(pool, String(params.branch));
       return { detail: result.detail, code: 0, skipped: !result.released, summary: result.detail };
+    }
+    case "hold": {
+      const pool = openPool(ctx);
+      const label = typeof params.label === "string" && params.label.trim() ? params.label.trim().slice(0, 200) : void 0;
+      const result = await holdSlot(pool, String(params.branch), String(params.holdId), String(params.expectedPath), label);
+      return { detail: result.detail, code: 0, summary: result.detail, pool: poolView(pool, readState(pool.paths)) };
+    }
+    case "unhold": {
+      const pool = openPool(ctx);
+      const result = await unholdSlot(pool, String(params.branch), String(params.holdId), params.confirmClosed === true, params.releaseLease === true);
+      return {
+        detail: result.detail,
+        code: 0,
+        skipped: !result.removed && !result.leaseReleased,
+        summary: result.detail,
+        pool: poolView(pool, readState(pool.paths))
+      };
     }
     case "gc":
       return runGc(ctx);
@@ -4421,6 +4555,10 @@ function dryRun(displayName, toolId, params, ctx) {
     lines.push(...sparsePlan(config));
   } else if (toolId === "gc") {
     lines.push(`\u8D85\u8FC7 ${config.maxSlots} \u4E2A\u69FD\u4F4D\u65F6\u56DE\u6536\u7A7A\u95F2\u69FD\u4F4D\uFF1B\u5220\u9664 ${config.patchRetentionDays} \u5929\u524D\u7684\u5B58\u6863`);
+  } else if (toolId === "hold") {
+    lines.push(`\u786E\u8BA4 ${params.branch} \u7684\u5B9E\u9645\u76EE\u5F55\u662F ${params.expectedPath} \u540E\uFF0C\u4EE5 ${params.holdId} \u52A0\u4FDD\u62A4\uFF1B\u4E0D\u5207\u6362\u3001\u4E0D\u66F4\u65B0\u3001\u4E0D\u52A8\u6587\u4EF6`);
+  } else if (toolId === "unhold") {
+    lines.push(`\u89E3\u9664 ${params.branch} \u4E0A ${params.holdId} \u7684\u4FDD\u62A4${params.releaseLease === true ? "\uFF0C\u5E76\u91CA\u653E\u79DF\u7EA6" : ""}\uFF1B\u5176\u4ED6\u6301\u6709\u8005\u4E0D\u53D7\u5F71\u54CD\uFF0C\u4E0D\u52A8\u6587\u4EF6`);
   }
   return lines.join("\n");
 }

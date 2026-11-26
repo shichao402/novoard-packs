@@ -42,7 +42,15 @@ export type Slot = {
   /** 最近一次读到的落后 revision 数。 */
   behind?: number;
   op?: SlotOp;
+  /**
+   * 持有保护（hold / unhold）：键为调用方给的 holdId。有任一持有时槽位不算空闲，
+   * 不会被切换、缩容或常驻更新；不随租约到期或进程退出消失，只能由对应 holdId 的 unhold 清除。
+   */
+  holds?: Record<string, Hold>;
 };
+
+/** 一条持有记录：何时建立、给人看的说明、建立时校验过的物理目录。 */
+export type Hold = { at: string; label?: string; path: string };
 
 export type PoolState = { version: 1; slots: Slot[] };
 
@@ -228,9 +236,14 @@ export function isResident(slot: Slot, config: PoolConfig): boolean {
   return Boolean(slot.branch) && config.resident.includes(slot.branch);
 }
 
-/** 空闲是推导出来的：ready、不是常驻、没有有效租约（租约过期不依赖 gc）。 */
+/** 槽位上有没有持有保护。 */
+export function isHeld(slot: Slot): boolean {
+  return Boolean(slot.holds) && Object.keys(slot.holds!).length > 0;
+}
+
+/** 空闲是推导出来的：ready、不是常驻、没有有效租约、没有持有保护（租约过期不依赖 gc）。 */
 export function isIdle(slot: Slot, config: PoolConfig, now: Date): boolean {
-  return slot.phase === "ready" && !isResident(slot, config) && !leaseActive(slot.lease, now);
+  return slot.phase === "ready" && !isResident(slot, config) && !leaseActive(slot.lease, now) && !isHeld(slot);
 }
 
 /** 进行中的操作是否已中断：有 op 且记录的进程已不存在。 */

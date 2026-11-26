@@ -42,6 +42,9 @@ function paramsToArgv(params: Record<string, unknown>): string[] {
 function sample(spec: ToolParamSpec): unknown {
   // workingCopyPool/acquire 的 ttl 有格式校验（dry-run 也校验）
   if (spec.name === "ttl") return "3d";
+  // workingCopyPool/hold 要求绝对路径，unhold 要求确认已关闭（dry-run 也校验）
+  if (spec.name === "expectedPath") return path.join(os.tmpdir(), "pool root", "slots", "s01");
+  if (spec.name === "confirmClosed") return true;
   switch (spec.type) {
     case "enum":
       return spec.enum?.[spec.enum.length - 1];

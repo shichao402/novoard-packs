@@ -119,6 +119,10 @@ function slotHint(view: SlotView, now: Date): string {
     case "resident":
       parts.push("常驻，就绪");
       break;
+    case "held":
+      parts.push(`受保护（${view.holds.map((h) => h.label ?? h.id).join("、")}）`);
+      if (view.lease) parts.push(`已占用${describeLease(view.lease, now)}`);
+      break;
     case "idle":
       parts.push("就绪");
       break;
@@ -251,7 +255,7 @@ export async function status(pool: Pool): Promise<{ detail: string; summary: str
     return `${describeSlot(v, now)}${text}\n  实际目录：${v.path}`;
   });
   const count = (s: SlotView["state"]): number => view.slots.filter((v) => v.state === s).length;
-  const summary = `${view.slots.length}/${view.maxSlots} 个槽位：占用 ${count("occupied")}，常驻 ${count("resident")}，空闲 ${count("idle")}${count("blocked") ? `，阻塞 ${count("blocked")}` : ""}${count("interrupted") ? `，中断 ${count("interrupted")}` : ""}`;
+  const summary = `${view.slots.length}/${view.maxSlots} 个槽位：占用 ${count("occupied")}，常驻 ${count("resident")}，空闲 ${count("idle")}${count("held") ? `，保护 ${count("held")}` : ""}${count("blocked") ? `，阻塞 ${count("blocked")}` : ""}${count("interrupted") ? `，中断 ${count("interrupted")}` : ""}`;
   const missingResident = view.resident.filter((b) => !view.slots.some((v) => v.branch === b));
   if (missingResident.length) lines.push(`常驻分支不在池里：${missingResident.join("、")}（下次 refresh 准备）`);
   if (skipped) lines.push(`${skipped} 个槽位超出统计时间，未读改动`);

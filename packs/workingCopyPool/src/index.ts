@@ -9,7 +9,7 @@ import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
 import { branchUrl, CONFIG_FILE, isBranchName, isTtl, loadConfig, type PoolConfig } from "./config";
 import { manifest } from "./manifest";
-import { acquireSummary, gc, obtain, openPool, poolView, recover, refresh, releaseBranch, resolveLease } from "./pool";
+import { acquireSummary, checkHoldId, gc, holdSlot, obtain, openPool, poolView, recover, refresh, releaseBranch, resolveLease, unholdSlot } from "./pool";
 import { candidates, occupied, peekPool, status } from "./queries";
 import { readState } from "./state";
 import { captureSpec, describeSparse, formatSpecToml } from "./sparse";
@@ -28,6 +28,9 @@ export async function run(toolId: string, rawParams: Record<string, unknown> | u
   if (typeof params.ttl === "string" && params.ttl.trim() && params.ttl.trim() !== "forever" && !isTtl(params.ttl.trim())) {
     throw new UsageError(`ttl 不合法：${params.ttl}（如 12h、1d、3d、1w 或 forever）`);
   }
+  if (toolId === "hold" || toolId === "unhold") checkHoldId(params.holdId);
+  if (toolId === "hold" && !path.isAbsolute(String(params.expectedPath))) throw new UsageError(`expectedPath 必须是绝对路径：${params.expectedPath}`);
+  if (toolId === "unhold" && params.confirmClosed !== true) throw new UsageError("解除保护前须确认用到该工作副本的应用已关闭（--confirm-closed）");
   if (ctx.dryRun) return { detail: dryRun(tool.displayName, toolId, params, ctx), code: 0 };
 
   switch (toolId) {
@@ -49,6 +52,23 @@ export async function run(toolId: string, rawParams: Record<string, unknown> | u
       const pool = openPool(ctx);
       const result = await releaseBranch(pool, String(params.branch));
       return { detail: result.detail, code: 0, skipped: !result.released, summary: result.detail };
+    }
+    case "hold": {
+      const pool = openPool(ctx);
+      const label = typeof params.label === "string" && params.label.trim() ? params.label.trim().slice(0, 200) : undefined;
+      const result = await holdSlot(pool, String(params.branch), String(params.holdId), String(params.expectedPath), label);
+      return { detail: result.detail, code: 0, summary: result.detail, pool: poolView(pool, readState(pool.paths)) };
+    }
+    case "unhold": {
+      const pool = openPool(ctx);
+      const result = await unholdSlot(pool, String(params.branch), String(params.holdId), params.confirmClosed === true, params.releaseLease === true);
+      return {
+        detail: result.detail,
+        code: 0,
+        skipped: !result.removed && !result.leaseReleased,
+        summary: result.detail,
+        pool: poolView(pool, readState(pool.paths)),
+      };
     }
     case "gc":
       return runGc(ctx);
@@ -153,6 +173,10 @@ function dryRun(displayName: string, toolId: string, params: Record<string, unkn
     lines.push(...sparsePlan(config));
   } else if (toolId === "gc") {
     lines.push(`超过 ${config.maxSlots} 个槽位时回收空闲槽位；删除 ${config.patchRetentionDays} 天前的存档`);
+  } else if (toolId === "hold") {
+    lines.push(`确认 ${params.branch} 的实际目录是 ${params.expectedPath} 后，以 ${params.holdId} 加保护；不切换、不更新、不动文件`);
+  } else if (toolId === "unhold") {
+    lines.push(`解除 ${params.branch} 上 ${params.holdId} 的保护${params.releaseLease === true ? "，并释放租约" : ""}；其他持有者不受影响，不动文件`);
   }
   return lines.join("\n");
 }

@@ -79,6 +79,81 @@
       ]
     },
     {
+      "id": "hold",
+      "displayName": "保护工作副本",
+      "description": "外部应用正在使用该分支的工作副本时加保护：不随租约到期或进程退出失效，切换、缩容、常驻更新都会跳过；只能用同一 holdId 的 unhold 解除，多个持有者互不影响",
+      "kind": "action",
+      "idempotent": true,
+      "supportsDryRun": true,
+      "supportsResultJson": true,
+      "params": [
+        {
+          "name": "branch",
+          "type": "string",
+          "required": true,
+          "label": "分支"
+        },
+        {
+          "name": "holdId",
+          "type": "string",
+          "required": true,
+          "label": "持有者 ID",
+          "description": "调用方自定的稳定标识，如 osglauncher:<项目>；同一 ID 重复保护只刷新时间"
+        },
+        {
+          "name": "expectedPath",
+          "type": "string",
+          "required": true,
+          "label": "确认的目录",
+          "description": "调用方看到的工作副本实际目录（绝对路径）；与池里不一致时拒绝，避免保护错槽位"
+        },
+        {
+          "name": "label",
+          "type": "string",
+          "label": "说明",
+          "description": "给人看的持有者说明，如 OSGLauncher 开工"
+        }
+      ]
+    },
+    {
+      "id": "unhold",
+      "displayName": "解除保护",
+      "description": "解除指定 holdId 的保护，其他持有者不受影响；须确认用到该工作副本的应用已关闭，可顺带释放租约",
+      "kind": "action",
+      "idempotent": true,
+      "supportsDryRun": true,
+      "supportsResultJson": true,
+      "params": [
+        {
+          "name": "branch",
+          "type": "string",
+          "required": true,
+          "label": "分支"
+        },
+        {
+          "name": "holdId",
+          "type": "string",
+          "required": true,
+          "label": "持有者 ID",
+          "description": "与 hold 时逐字一致"
+        },
+        {
+          "name": "confirmClosed",
+          "type": "boolean",
+          "default": false,
+          "label": "已关闭相关应用",
+          "description": "必须为 true：确认 IDE、编辑器等用到该目录的应用已关闭"
+        },
+        {
+          "name": "releaseLease",
+          "type": "boolean",
+          "default": false,
+          "label": "同时释放租约",
+          "description": "等同再调用一次 release"
+        }
+      ]
+    },
+    {
       "id": "gc",
       "displayName": "池回收",
       "description": "推进中断恢复、复查阻塞槽位、缩容删除多出的空闲槽位、清理断链与过期存档",

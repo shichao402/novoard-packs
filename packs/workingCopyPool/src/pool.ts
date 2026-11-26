@@ -2,7 +2,7 @@
  * 池的核心流程（PRD working-copy-pool「执行工具」「切换流程」「新建流程」「中断恢复」）。
  * 约定：锁内只做 state.json 的读改写；svn、删除、释放占用都在锁外，用 phase 与 op 占位。
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { UsageError } from "../../../shared/cli";
 import { prepareExclusiveAccess } from "../../../shared/occupants";
@@ -17,6 +17,7 @@ import {
   branchDirName,
   branchLink,
   ensureLayout,
+  isHeld,
   isIdle,
   isInterrupted,
   isResident,
@@ -28,6 +29,7 @@ import {
   poolPaths,
   readState,
   slotDir,
+  type Hold,
   type Lease,
   type PoolPaths,
   type PoolState,
@@ -86,7 +88,7 @@ export type SlotView = {
   id: string;
   branch: string;
   /** 推导后的状态。 */
-  state: "occupied" | "resident" | "idle" | "switching" | "blocked" | "retiring" | "interrupted";
+  state: "occupied" | "held" | "resident" | "idle" | "switching" | "blocked" | "retiring" | "interrupted";
   phase: Slot["phase"];
   lease: Lease | null;
   lastUsed: string | null;
@@ -95,6 +97,8 @@ export type SlotView = {
   path: string;
   link: string | null;
   target: string | null;
+  /** 持有保护，按建立时间排序。 */
+  holds: Array<{ id: string } & Hold>;
 };
 
 export function slotState(slot: Slot, config: PoolConfig, now: Date): SlotView["state"] {
@@ -102,9 +106,22 @@ export function slotState(slot: Slot, config: PoolConfig, now: Date): SlotView["
   if (slot.phase === "switching") return "switching";
   if (slot.phase === "retiring") return "retiring";
   if (slot.phase === "blocked") return "blocked";
+  if (isHeld(slot)) return "held";
   if (leaseActive(slot.lease, now)) return "occupied";
   if (isResident(slot, config)) return "resident";
   return "idle";
+}
+
+export function holdList(slot: Slot): SlotView["holds"] {
+  return Object.entries(slot.holds ?? {})
+    .map(([id, hold]) => ({ id, ...hold }))
+    .sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+}
+
+/** 持有者的可读名字：有 label 用 label，并带上 holdId 便于人工 unhold。 */
+export function holdNames(slot: Pick<Slot, "holds"> | SlotView): string {
+  const list = Array.isArray(slot.holds) ? slot.holds : holdList(slot as Slot);
+  return list.map((h) => (h.label ? `${h.label}（${h.id}）` : h.id)).join("、");
 }
 
 export function viewSlots(pool: Pool, state: PoolState): SlotView[] {
@@ -121,6 +138,7 @@ export function viewSlots(pool: Pool, state: PoolState): SlotView[] {
     path: slotDir(pool.paths, slot),
     link: slot.branch ? branchLink(pool.paths, slot.branch) : null,
     target: slot.op?.target ?? null,
+    holds: holdList(slot),
   }));
 }
 
@@ -132,6 +150,7 @@ export function poolView(pool: Pool, state: PoolState): { root: string; maxSlots
 
 const STATE_TEXT: Record<SlotView["state"], string> = {
   occupied: "占用",
+  held: "保护中",
   resident: "常驻",
   idle: "空闲",
   switching: "切换中",
@@ -142,6 +161,7 @@ const STATE_TEXT: Record<SlotView["state"], string> = {
 
 export function describeSlot(view: SlotView, now: Date): string {
   const parts = [`${view.id} ${view.branch || "(未定)"}`, STATE_TEXT[view.state]];
+  if (view.holds.length) parts.push(`持有者 ${holdNames(view)}`);
   if (view.lease) parts.push(`租约${describeLease(view.lease, now)}`);
   if (view.target && (view.state === "switching" || view.state === "interrupted")) parts.push(`→ ${view.target}`);
   if (view.behind !== null && view.behind > 0) parts.push(`落后 ${view.behind}`);
@@ -316,7 +336,7 @@ type Claim =
   | { kind: "busy"; slot: Slot }
   | { kind: "full"; slots: Slot[] };
 
-/** 选槽位（锁内调用）：已在该分支 → 空闲中 lastUsed 最早 → 新建 → 池满。 */
+/** 选槽位（锁内调用）：已在该分支 → 空闲中 lastUsed 最早 → 新建 → 池满。有效租约、持有保护、常驻的槽位都不算空闲。 */
 export function claimSlot(state: PoolState, config: PoolConfig, branch: string, lease: Lease | null, now: Date, excluded: Set<string> = new Set(), allocate?: (id: string) => string): Claim {
   const existing = state.slots.find((s) => s.branch === branch && (s.phase === "ready" || s.phase === "blocked") && !s.op);
   if (existing) {
@@ -543,14 +563,100 @@ export async function releaseBranch(pool: Pool, branch: string): Promise<{ relea
   const result = await mutate(pool.paths, (state) => {
     const slot = state.slots.find((s) => s.branch === branch);
     if (!slot) return { released: false, detail: `${branch} 不在池里` };
+    // 只清租约，不碰持有保护：保护只能由对应 holdId 的 unhold 解除
+    const held = isHeld(slot) ? `；仍有持有保护（${holdNames(slot)}），槽位不会被切换或回收` : "";
     if (!leaseActive(slot.lease, now)) {
       slot.lease = null;
-      return { released: false, slot: slot.id, detail: `${branch}（${slot.id}）没有有效租约` };
+      return { released: false, slot: slot.id, detail: `${branch}（${slot.id}）没有有效租约${held}` };
     }
     slot.lease = null;
-    return { released: true, slot: slot.id, detail: `已释放 ${branch}（${slot.id}），工作副本留在原分支` };
+    return { released: true, slot: slot.id, detail: `已释放 ${branch}（${slot.id}），工作副本留在原分支${held}` };
   });
   if (result.released) appendHistory(pool.paths, { at: now.toISOString(), action: "release", branch, slot: result.slot });
+  return result;
+}
+
+// ---------------------------------------------------------------- hold / unhold
+
+/** holdId：1–200 个可见字符，首尾不能有空白（解除时要逐字一致）。 */
+export function checkHoldId(value: unknown): string {
+  const id = typeof value === "string" ? value : "";
+  if (!id || id !== id.trim() || id.length > 200 || /[\u0000-\u001f\u007f]/.test(id)) {
+    throw new UsageError(`holdId 不合法：${JSON.stringify(value)}（1–200 个可见字符，首尾不能有空白）`);
+  }
+  return id;
+}
+
+function realPath(p: string): string | undefined {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return undefined;
+  }
+}
+
+export type HoldOutcome = { slot: string; renewed: boolean; holders: number; detail: string };
+
+/**
+ * 给分支所在槽位加保护。锁内一次完成：找到槽位、确认就绪、确认实际目录就是调用方看到的 expectedPath，再写入 holds。
+ * 同一 holdId 重复调用只刷新时间与说明。保护不看租约、不看进程是否还活着，只能由 unhold 解除。
+ */
+export async function holdSlot(pool: Pool, branch: string, holdId: string, expectedPath: string, label?: string): Promise<HoldOutcome> {
+  if (!path.isAbsolute(expectedPath)) throw new UsageError(`expectedPath 必须是绝对路径：${expectedPath}`);
+  const now = pool.now();
+  return mutate(pool.paths, (state) => {
+    const slot = state.slots.find((s) => s.branch === branch);
+    if (!slot) throw new Error(`${branch} 不在池里，请先占用（acquire）再保护`);
+    if (slot.op || slot.phase !== "ready") {
+      throw new Error(`${branch}（${slot.id}）未就绪：${slot.op ? "正在被另一个任务处理" : slot.blockedReason ?? slot.phase}，不能保护`);
+    }
+    const wc = slotDir(pool.paths, slot);
+    const actual = realPath(wc);
+    if (!actual) throw new Error(`${branch}（${slot.id}）的实际目录不存在：${wc}`);
+    if (!samePath(actual, realPath(expectedPath) ?? expectedPath)) {
+      throw new Error(`${branch} 现在位于 ${slot.id}（${actual}），与调用方确认的 ${expectedPath} 不一致，未加保护；请刷新后重新确认`);
+    }
+    const holds = slot.holds ?? {};
+    const renewed = Object.prototype.hasOwnProperty.call(holds, holdId);
+    holds[holdId] = { at: now.toISOString(), path: actual, ...(label ? { label } : {}) };
+    slot.holds = holds;
+    slot.lastUsed = now.toISOString();
+    const holders = Object.keys(holds).length;
+    return {
+      slot: slot.id,
+      renewed,
+      holders,
+      detail: `${renewed ? "已刷新" : "已建立"} ${branch}（${slot.id}）的保护 ${holdId}；当前 ${holders} 个持有者，切换、缩容、常驻更新都会跳过这个槽位`,
+    };
+  });
+}
+
+export type UnholdOutcome = { slot?: string; removed: boolean; leaseReleased: boolean; holders: number; detail: string };
+
+/**
+ * 解除 holdId 的保护，其他持有者不受影响。必须由调用方确认相关应用已关闭。
+ * releaseLease 时顺带清除租约（等同 release）；其他持有者还在时槽位仍受保护。
+ * 分支不在池里或该 holdId 不存在时什么都不改，视为已解除（可重复调用）。
+ */
+export async function unholdSlot(pool: Pool, branch: string, holdId: string, confirmClosed: boolean, releaseLease: boolean): Promise<UnholdOutcome> {
+  if (!confirmClosed) throw new UsageError("解除保护前须确认用到该工作副本的应用已关闭（--confirm-closed）");
+  const now = pool.now();
+  const result = await mutate(pool.paths, (state): UnholdOutcome => {
+    const slot = state.slots.find((s) => s.branch === branch);
+    if (!slot) return { removed: false, leaseReleased: false, holders: 0, detail: `${branch} 不在池里，无需解除` };
+    const holds = slot.holds ?? {};
+    const removed = Object.prototype.hasOwnProperty.call(holds, holdId);
+    if (removed) delete holds[holdId];
+    slot.holds = Object.keys(holds).length ? holds : undefined;
+    const leaseReleased = releaseLease && leaseActive(slot.lease, now);
+    if (releaseLease) slot.lease = null;
+    const holders = Object.keys(holds).length;
+    const parts = [removed ? `已解除 ${branch}（${slot.id}）的保护 ${holdId}` : `${branch}（${slot.id}）上没有 ${holdId} 的保护`];
+    if (releaseLease) parts.push(leaseReleased ? "已释放租约" : "没有有效租约");
+    parts.push(holders ? `仍有 ${holders} 个持有者（${holdNames(slot)}），继续受保护` : "槽位已不受保护");
+    return { slot: slot.id, removed, leaseReleased, holders, detail: parts.join("；") };
+  });
+  if (result.leaseReleased) appendHistory(pool.paths, { at: now.toISOString(), action: "release", branch, slot: result.slot });
   return result;
 }
 
@@ -615,7 +721,7 @@ export async function gc(pool: Pool): Promise<GcReport> {
     });
     if (!pick) break;
     if ("none" in pick) {
-      report.pendingShrink.push(`还需缩减 ${pick.none} 个槽位，等租约结束或阻塞处理后再回收`);
+      report.pendingShrink.push(`还需缩减 ${pick.none} 个槽位，等租约结束、保护解除或阻塞处理后再回收`);
       break;
     }
     tried.add(pick.slot.id);
@@ -771,6 +877,7 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
     const slot = state.slots.find((s) => s.branch === branch || s.op?.target === branch);
     if (!slot) return { kind: "absent" as const };
     if (slot.op) return { kind: "skip" as const, why: `${slot.id} 正在被另一个任务处理` };
+    if (isHeld(slot)) return { kind: "skip" as const, why: `${slot.id} 受保护（${holdNames(slot)}），不更新` };
     if (slot.ownershipUnconfirmed) return { kind: "skip" as const, why: `${slot.id} 目录所有权未确认，需人工检查` };
     const retryBlocked = slot.phase === "blocked" && pool.config.hooks?.retryBlocked === true;
     if (slot.phase === "blocked" && !retryBlocked) return { kind: "skip" as const, why: `${slot.id} 阻塞：${slot.blockedReason ?? ""}` };
