@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+
+/** 不要求完整输出时，stdout/stderr 各自只留末尾这么多字符（够报错、看尾部日志）。 */
+export const OUTPUT_TAIL_CHARS = 200_000;
 
 export type ExecResult = {
   code: number | null;
@@ -9,6 +13,8 @@ export type ExecResult = {
   stderr: string;
   cancelled: boolean;
   timedOut: boolean;
+  /** stdout 超过 OUTPUT_TAIL_CHARS、只留了末尾（fullStdout 时恒为 false）。 */
+  stdoutTruncated: boolean;
 };
 
 export type ExecHandle = {
@@ -60,7 +66,10 @@ function killTree(proc: ChildProcess, force: boolean): void {
   }
 }
 
-/** Async spawn that does not block the event loop. */
+/**
+ * Async spawn that does not block the event loop.
+ * stdout/stderr 完整保留：调用方（ps、tasklist、占用查询）都要整份解析，截掉开头会漏条目或解析失败。
+ */
 export function spawnCaptured(options: {
   command: string;
   args: string[];
@@ -75,8 +84,8 @@ export function spawnCaptured(options: {
       return;
     }
 
-    let stdout = "";
-    let stderr = "";
+    const out = new OutputBuffer(Infinity);
+    const err = new OutputBuffer(Infinity);
     let settled = false;
     let timedOut = false;
     let cancelled = false;
@@ -106,7 +115,7 @@ export function spawnCaptured(options: {
         reject(new Error("已取消"));
         return;
       }
-      resolve({ stdout, stderr, code, timedOut, cancelled });
+      resolve({ stdout: out.text(), stderr: err.text(), code, timedOut, cancelled });
     };
 
     const onAbort = (): void => {
@@ -115,14 +124,11 @@ export function spawnCaptured(options: {
     };
 
     if (!ignoreOutput) {
+      // setEncoding 内部用 StringDecoder，多字节字符跨 chunk 不会被拆坏
       proc.stdout?.setEncoding("utf8");
       proc.stderr?.setEncoding("utf8");
-      proc.stdout?.on("data", (chunk: string) => {
-        stdout = cap(stdout + chunk);
-      });
-      proc.stderr?.on("data", (chunk: string) => {
-        stderr = cap(stderr + chunk);
-      });
+      proc.stdout?.on("data", (chunk: string) => out.push(chunk));
+      proc.stderr?.on("data", (chunk: string) => err.push(chunk));
     }
     proc.on("error", () => finish(1));
     proc.on("close", (code) => finish(code));
@@ -159,13 +165,18 @@ export function runCommand(options: {
   env?: NodeJS.ProcessEnv;
   /** stdout 每个完整行回调一次（用于进度计数），末尾不完整行在进程结束时补发。 */
   onStdoutLine?: (line: string) => void;
+  /**
+   * 完整保留 stdout。要整份解析 stdout 的调用（xml、diff、列表）必须开；
+   * 缺省只留末尾 OUTPUT_TAIL_CHARS 个字符，并在结果里标 stdoutTruncated。
+   */
+  fullStdout?: boolean;
 }): ExecHandle {
   mkdirSync(path.dirname(options.logFile), { recursive: true });
   const log = createWriteStream(options.logFile, { flags: "a" });
   log.write(`$ ${options.command} ${options.args.join(" ")}\ncwd=${options.cwd}\n\n`);
 
-  let stdout = "";
-  let stderr = "";
+  const out = new OutputBuffer(options.fullStdout ? Infinity : OUTPUT_TAIL_CHARS);
+  const err = new OutputBuffer(OUTPUT_TAIL_CHARS);
   let cancelled = false;
   let timedOut = false;
   let proc: ChildProcess | undefined;
@@ -212,7 +223,15 @@ export function runCommand(options: {
       }
       options.abortSignal?.removeEventListener("abort", onAbort);
       log.end();
-      resolve({ code, signal, stdout, stderr, cancelled, timedOut });
+      resolve({
+        code,
+        signal,
+        stdout: out.text(),
+        stderr: err.text(),
+        cancelled,
+        timedOut,
+        stdoutTruncated: out.truncated,
+      });
     };
 
     const onAbort = (): void => {
@@ -251,24 +270,31 @@ export function runCommand(options: {
       }
     };
 
+    // 逐 chunk toString 会把跨 chunk 的多字节字符（中文路径、diff 内容）拆成乱码，用 StringDecoder 接续
+    const outDecoder = new StringDecoder("utf8");
+    const errDecoder = new StringDecoder("utf8");
+    const onStdout = (text: string, flush: boolean): void => {
+      out.push(text);
+      emitLines(text, flush);
+    };
+
     proc.stdout?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
-      stdout = cap(stdout + text);
       log.write(chunk);
-      emitLines(text, false);
+      onStdout(outDecoder.write(chunk), false);
     });
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr = cap(stderr + chunk.toString("utf8"));
       log.write(chunk);
+      err.push(errDecoder.write(chunk));
     });
     proc.on("error", (error) => {
       const message = `${error.message}\n`;
-      stderr = cap(stderr + message);
+      err.push(message);
       log.write(message);
       finish(1, null);
     });
     proc.on("close", (code, signal) => {
-      emitLines("", true);
+      onStdout(outDecoder.end(), true);
+      err.push(errDecoder.end());
       finish(code, signal);
     });
 
@@ -294,9 +320,36 @@ export function runCommand(options: {
   };
 }
 
-function cap(text: string, max = 200_000): string {
-  if (text.length <= max) {
-    return text;
+/**
+ * 子进程输出收集。limit=Infinity 时完整保留；否则只留末尾 limit 个字符并记 truncated。
+ * 分块收集、超过两倍上限才压缩一次，避免每个 chunk 都把整串拼接一遍（大输出时是平方级）。
+ */
+class OutputBuffer {
+  private chunks: string[] = [];
+  private size = 0;
+  truncated = false;
+
+  constructor(private readonly limit: number) {}
+
+  push(text: string): void {
+    if (!text) return;
+    this.chunks.push(text);
+    this.size += text.length;
+    if (this.size > this.limit * 2) this.compact();
   }
-  return text.slice(text.length - max);
+
+  text(): string {
+    this.compact();
+    if (this.chunks.length > 1) this.chunks = [this.chunks.join("")];
+    return this.chunks[0] ?? "";
+  }
+
+  private compact(): void {
+    if (this.size <= this.limit) return;
+    const joined = this.chunks.join("");
+    const kept = joined.slice(joined.length - this.limit);
+    this.chunks = [kept];
+    this.size = kept.length;
+    this.truncated = true;
+  }
 }

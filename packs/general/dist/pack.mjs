@@ -366,6 +366,8 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync as mkdirSync2 } from "node:fs";
 import path2 from "node:path";
+import { StringDecoder } from "node:string_decoder";
+var OUTPUT_TAIL_CHARS = 2e5;
 var STRIP_ENV = /* @__PURE__ */ new Set(["VSCODE_NLS_CONFIG", "VSCODE_PID", "VSCODE_CWD", "VSCODE_NLS_CONFIG_JSON"]);
 function buildChildEnv(base = process.env) {
   const env = { ...base };
@@ -401,8 +403,8 @@ function spawnCaptured(options) {
       reject(new Error("\u5DF2\u53D6\u6D88"));
       return;
     }
-    let stdout = "";
-    let stderr = "";
+    const out = new OutputBuffer(Infinity);
+    const err = new OutputBuffer(Infinity);
     let settled = false;
     let timedOut = false;
     let cancelled = false;
@@ -429,7 +431,7 @@ function spawnCaptured(options) {
         reject(new Error("\u5DF2\u53D6\u6D88"));
         return;
       }
-      resolve({ stdout, stderr, code, timedOut, cancelled });
+      resolve({ stdout: out.text(), stderr: err.text(), code, timedOut, cancelled });
     };
     const onAbort = () => {
       cancelled = true;
@@ -438,12 +440,8 @@ function spawnCaptured(options) {
     if (!ignoreOutput) {
       proc.stdout?.setEncoding("utf8");
       proc.stderr?.setEncoding("utf8");
-      proc.stdout?.on("data", (chunk) => {
-        stdout = cap(stdout + chunk);
-      });
-      proc.stderr?.on("data", (chunk) => {
-        stderr = cap(stderr + chunk);
-      });
+      proc.stdout?.on("data", (chunk) => out.push(chunk));
+      proc.stderr?.on("data", (chunk) => err.push(chunk));
     }
     proc.on("error", () => finish(1));
     proc.on("close", (code) => finish(code));
@@ -470,8 +468,8 @@ function runCommand(options) {
 cwd=${options.cwd}
 
 `);
-  let stdout = "";
-  let stderr = "";
+  const out = new OutputBuffer(options.fullStdout ? Infinity : OUTPUT_TAIL_CHARS);
+  const err = new OutputBuffer(OUTPUT_TAIL_CHARS);
   let cancelled = false;
   let timedOut = false;
   let proc;
@@ -514,7 +512,15 @@ cwd=${options.cwd}
       }
       options.abortSignal?.removeEventListener("abort", onAbort);
       log.end();
-      resolve({ code, signal, stdout, stderr, cancelled, timedOut });
+      resolve({
+        code,
+        signal,
+        stdout: out.text(),
+        stderr: err.text(),
+        cancelled,
+        timedOut,
+        stdoutTruncated: out.truncated
+      });
     };
     const onAbort = () => {
       cancelled = true;
@@ -549,25 +555,30 @@ cwd=${options.cwd}
         if (line) options.onStdoutLine(line);
       }
     };
+    const outDecoder = new StringDecoder("utf8");
+    const errDecoder = new StringDecoder("utf8");
+    const onStdout = (text, flush) => {
+      out.push(text);
+      emitLines(text, flush);
+    };
     proc.stdout?.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      stdout = cap(stdout + text);
       log.write(chunk);
-      emitLines(text, false);
+      onStdout(outDecoder.write(chunk), false);
     });
     proc.stderr?.on("data", (chunk) => {
-      stderr = cap(stderr + chunk.toString("utf8"));
       log.write(chunk);
+      err.push(errDecoder.write(chunk));
     });
     proc.on("error", (error) => {
       const message = `${error.message}
 `;
-      stderr = cap(stderr + message);
+      err.push(message);
       log.write(message);
       finish(1, null);
     });
     proc.on("close", (code, signal) => {
-      emitLines("", true);
+      onStdout(outDecoder.end(), true);
+      err.push(errDecoder.end());
       finish(code, signal);
     });
     timer = setTimeout(() => {
@@ -589,12 +600,33 @@ cwd=${options.cwd}
     done
   };
 }
-function cap(text, max = 2e5) {
-  if (text.length <= max) {
-    return text;
+var OutputBuffer = class {
+  constructor(limit) {
+    this.limit = limit;
   }
-  return text.slice(text.length - max);
-}
+  chunks = [];
+  size = 0;
+  truncated = false;
+  push(text) {
+    if (!text) return;
+    this.chunks.push(text);
+    this.size += text.length;
+    if (this.size > this.limit * 2) this.compact();
+  }
+  text() {
+    this.compact();
+    if (this.chunks.length > 1) this.chunks = [this.chunks.join("")];
+    return this.chunks[0] ?? "";
+  }
+  compact() {
+    if (this.size <= this.limit) return;
+    const joined = this.chunks.join("");
+    const kept = joined.slice(joined.length - this.limit);
+    this.chunks = [kept];
+    this.size = kept.length;
+    this.truncated = true;
+  }
+};
 
 // shared/occupants.ts
 var PROTECTED_NAMES = /* @__PURE__ */ new Set([

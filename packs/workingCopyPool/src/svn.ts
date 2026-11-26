@@ -28,9 +28,9 @@ export type SvnRunOptions = {
   wc?: string;
   allowFail?: boolean;
   timeoutMs?: number;
-  /** 进度前缀；给了就按 update 输出计数。 */
+  /** 进度前缀；给了就按 update 输出计数（输出量大，捕获的 stdout 只留末尾）。 */
   progress?: string;
-  /** stdout 逐行回调（输出很大时用，捕获的 stdout 会被截断）。 */
+  /** stdout 逐行回调。输出很大、不需要整份 stdout 时用；给了就只留 stdout 末尾，不完整保留。 */
   onLine?: (line: string) => void;
 };
 
@@ -50,6 +50,8 @@ export async function svn(ctx: SvnCtx, args: string[], options: SvnRunOptions = 
     abortSignal: ctx.abortSignal,
     gracefulMs: SVN_GRACEFUL_MS,
     onStdoutLine: options.onLine ?? counter?.line,
+    // info/status/ls/log/diff 都要整份解析：只留末尾会丢掉开头的条目（ls 两千多个分支只剩一半）
+    fullStdout: !options.onLine && !counter,
   }).done;
   if (result.cancelled) {
     const note = options.wc && existsSync(path.join(options.wc, ".svn")) ? await cleanupAfterInterrupt(args, { cwd: options.wc, logFile: ctx.logFile }) : "";

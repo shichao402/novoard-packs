@@ -51,14 +51,19 @@ function cacheFile(pool: Pool): string {
   return path.join(pool.paths.cache, "list-from.json");
 }
 
-function cacheKey(config: PoolConfig): string {
-  return JSON.stringify([config.svnRoot, config.branches.listFrom, config.branches.pattern, config.aliases]);
+/**
+ * 缓存 key 的版本。v1 的缓存可能是 svn ls 输出被截断后写下的（分支多时只剩后一半），升版本让它们失效。
+ */
+const LIST_CACHE_VERSION = 2;
+
+export function listCacheKey(config: PoolConfig): string {
+  return JSON.stringify([LIST_CACHE_VERSION, config.svnRoot, config.branches.listFrom, config.branches.pattern, config.aliases]);
 }
 
 function readCache(pool: Pool): ListCache | undefined {
   try {
     const value = JSON.parse(readFileSync(cacheFile(pool), "utf8")) as ListCache;
-    if (value.key !== cacheKey(pool.config) || !Array.isArray(value.entries)) return undefined;
+    if (value.key !== listCacheKey(pool.config) || !Array.isArray(value.entries)) return undefined;
     return value;
   } catch {
     return undefined;
@@ -68,7 +73,7 @@ function readCache(pool: Pool): ListCache | undefined {
 function writeCache(pool: Pool, entries: RemoteBranch[]): void {
   try {
     mkdirSync(pool.paths.cache, { recursive: true });
-    const value: ListCache = { at: pool.now().toISOString(), key: cacheKey(pool.config), entries };
+    const value: ListCache = { at: pool.now().toISOString(), key: listCacheKey(pool.config), entries };
     writeFileSync(cacheFile(pool), `${JSON.stringify(value, null, 2)}\n`, "utf8");
   } catch {
     // 缓存写不了只影响下次速度

@@ -124,16 +124,21 @@ export async function svnCheckAndUpdate(options: {
     total: incomingXml ? predicted.incoming : 0,
     emit: (message, percent) => options.onProgress?.(message, percent),
   });
+  // update 输出可能很大、捕获的 stdout 只留末尾，冲突行逐行收集，不从 stdout 事后解析
+  const updateConflicts = new Set<string>();
   const update = await runSvn(
     options,
     ["update", "--non-interactive", "--accept", "postpone"],
     "svn update",
     true,
-    counter.line,
+    (line) => {
+      counter.line(line);
+      for (const rel of conflictedRelativesFromUpdateOutput(line)) updateConflicts.add(rel);
+    },
   );
   if (update.code === 0) {
     counter.finish();
-    const conflicts = conflictedRelativesFromUpdateOutput(update.stdout);
+    const conflicts = [...updateConflicts];
     if (conflicts.length > 0 && policy === "postpone") {
       return {
         skipped: true,
@@ -291,6 +296,8 @@ async function runSvn(
     abortSignal: options.abortSignal,
     gracefulMs: SVN_GRACEFUL_MS,
     onStdoutLine,
+    // status --xml 要整份解析（写集预测、冲突判断、备份清单）；update/revert 输出只看尾部
+    fullStdout: args[0] === "status",
   }).done;
   if (result.cancelled) {
     const note = await cleanupAfterInterrupt(args, { cwd: options.workingCopy, logFile: options.logFile });

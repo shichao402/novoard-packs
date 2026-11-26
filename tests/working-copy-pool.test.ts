@@ -12,7 +12,7 @@ import type { ToolRunContext } from "../shared/types";
 import { branchFromUrl, branchUrl, ConfigError, isBranchName, leaseUntil, parseConfig, type PoolConfig } from "../packs/workingCopyPool/src/config";
 import { run } from "../packs/workingCopyPool/src/index";
 import { claimSlot, slotState } from "../packs/workingCopyPool/src/pool";
-import { listRemoteBranches, mergeCandidates, missHint, occupiedChoices, parseListXml, peekPool } from "../packs/workingCopyPool/src/queries";
+import { listCacheKey, listRemoteBranches, mergeCandidates, missHint, occupiedChoices, parseListXml, peekPool } from "../packs/workingCopyPool/src/queries";
 import {
   acquireLock,
   branchDirName,
@@ -423,9 +423,16 @@ describe("candidates 与 occupied", () => {
     expect(miss.error).toMatch(/远端列不出/);
     expect(existsSync(cacheFile)).toBe(false);
 
-    const key = JSON.stringify([pool.config.svnRoot, pool.config.branches.listFrom, pool.config.branches.pattern, pool.config.aliases]);
     const entries = [{ branch: "x", date: "2026-11-15T00:00:00Z" }];
     ensureLayout(pool.paths);
+    // 旧版本（未带版本号）的缓存可能是截断输出写下的，不再采用
+    const legacyKey = JSON.stringify([pool.config.svnRoot, pool.config.branches.listFrom, pool.config.branches.pattern, pool.config.aliases]);
+    writeFileSync(cacheFile, JSON.stringify({ at: new Date(NOW.getTime() - 5 * 60_000).toISOString(), key: legacyKey, entries }));
+    const legacy = await listRemoteBranches(pool);
+    expect(legacy.entries).toEqual([]);
+    expect(legacy.error).toMatch(/远端列不出：/);
+
+    const key = listCacheKey(pool.config);
     writeFileSync(cacheFile, JSON.stringify({ at: new Date(NOW.getTime() - 5 * 60_000).toISOString(), key, entries }));
     expect(await listRemoteBranches(pool)).toEqual({ entries, cached: true });
 
