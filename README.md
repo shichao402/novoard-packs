@@ -12,7 +12,7 @@ novoard-agent 的通用能力包。协议见 novoard-agent 仓 `docs/adr/0019-ca
 
 三个包放同一个仓库，是因为它们共用 svn 调用（`shared/svn-*`）和"哪个进程占着文件"的检测代码（`shared/occupants`）。这些代码在编译期分别打进各包，运行时互不依赖。
 
-workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`，池根只放配置、`branch/` 入口、存档和状态，不放槽位。槽位放在 `[storage].roots` 列出的专用目录里；Windows 上这些目录路径要尽量短（如 `E:/osgpool-slots`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。`projects` 是工程清单，消费方据此生成工程卡片，refresh 只更新其中已挂槽的分支；池里没有常驻分支，trunk 这类日常工程不进池。稀疏检出用 `[sparse]` 的 `root` 加 `[sparse.depth]` 映射表，白名单、黑名单都能写；已有精简工程时先跑 `capture-sparse` 导出。
+workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`，池根只放配置、`branch/` 入口、存档和状态，不放槽位。槽位放在 `[storage].roots` 列出的专用目录里；Windows 上这些目录路径要尽量短（如 `E:/osgpool-slots`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。`projects` 是工程清单，消费方据此生成工程卡片，refresh 只更新其中已挂槽的分支；池里没有常驻分支，清单里的分支（包括 trunk）在池满时都可能被换出，需要永远不被换走的工作副本放在池外手动管理。稀疏检出用 `[sparse]` 的 `root` 加 `[sparse.depth]` 映射表，白名单、黑名单都能写；已有精简工程时先跑 `capture-sparse` 导出。
 
 ## 槽位存放
 

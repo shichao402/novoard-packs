@@ -1331,7 +1331,7 @@ function parseConfig(text) {
     throw new ConfigError(`${CONFIG_FILE}${line ? ` \u7B2C ${line} \u884C` : ""} ${field}\uFF1A${message}`);
   };
   if (raw.resident !== void 0) {
-    fail("", "resident", "\u5DF2\u79FB\u9664\uFF1A\u6C60\u91CC\u4E0D\u518D\u6709\u5E38\u9A7B\u5206\u652F\u3002\u65E5\u5E38\u4F7F\u7528\u7684\u5DE5\u7A0B\uFF08\u5982 trunk\uFF09\u8BF7\u79FB\u51FA\u6C60\u5355\u72EC\u7BA1\u7406\uFF0C\u5176\u4F59\u9700\u8981\u7684\u5206\u652F\u5199\u8FDB projects");
+    fail("", "resident", "\u5DF2\u79FB\u9664\uFF1A\u6C60\u91CC\u4E0D\u518D\u6709\u5E38\u9A7B\u5206\u652F\uFF0C\u9700\u8981\u7684\u5206\u652F\uFF08\u5305\u62EC trunk\uFF09\u90FD\u5199\u8FDB projects");
   }
   for (const key2 of Object.keys(raw)) {
     if (!TOP_KEYS.has(key2)) fail("", key2, "\u672A\u77E5\u5B57\u6BB5");

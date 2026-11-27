@@ -96,7 +96,7 @@ export function parseConfig(text: string): PoolConfig {
   };
 
   if (raw.resident !== undefined) {
-    fail("", "resident", "已移除：池里不再有常驻分支。日常使用的工程（如 trunk）请移出池单独管理，其余需要的分支写进 projects");
+    fail("", "resident", "已移除：池里不再有常驻分支，需要的分支（包括 trunk）都写进 projects");
   }
   for (const key of Object.keys(raw)) {
     if (!TOP_KEYS.has(key)) fail("", key, "未知字段");

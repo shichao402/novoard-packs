@@ -102,7 +102,7 @@ describe("pool.toml 校验", () => {
     [`${BASE}[sparse.depth]\n"A" = "empty"\n"A/" = "files"\n`, /冲突/],
     [`${BASE}[sparse.depth]\n"A" = "exclude"\n"A/B" = "infinity"\n`, /A\/B 在已排除的 A 之下/],
     [`${BASE}projects = ["/abs"]\n`, /第 3 行 projects：分支名不合法/],
-    [`${BASE}resident = ["trunk"]\n`, /第 3 行 resident：已移除：池里不再有常驻分支/],
+      [`${BASE}resident = ["trunk"]\n`, /第 3 行 resident：已移除：池里不再有常驻分支，需要的分支（包括 trunk）都写进 projects/],
     [`svnRoot = "file:///r"\n`, /缺少 maxSlots/],
     [`maxSlots = 2\nsvnRoot = "file:///r"\nprojects = [\n`, /pool\.toml 第 \d+ 行/],
   ])("报错带行号与字段 %#", (text, pattern) => {
