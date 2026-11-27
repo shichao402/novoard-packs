@@ -23,13 +23,27 @@ const svnUpdate: ToolManifest = {
     {
       name: "onConflict",
       type: "enum",
-      enum: ["fail", "postpone", "revert"],
+      enum: ["fail", "postpone", "revert", "rules"],
       default: "fail",
       label: "遇到冲突",
-      description: "fail: 冲突即失败；postpone: 保留现场挂起本轮，下轮自动继续；revert: 备份后还原",
+      description:
+        "fail: 冲突即失败；postpone: 保留现场挂起本轮，下轮自动继续；revert: 备份后还原；rules: 按 SVN 规则文件处理（先存档，可丢弃类别与命中规则取远端，其余阻塞）",
     },
     { name: "backupOnRevert", type: "boolean", default: true, label: "还原前备份" },
     { name: "backupDir", type: "string", label: "备份目录", format: "path" },
+    {
+      name: "rulesFile",
+      type: "string",
+      format: "path",
+      label: "SVN 规则文件",
+      description: "onConflict=rules 时必填，svn-rules.toml 的绝对路径",
+    },
+    {
+      name: "rulesEnable",
+      type: "string[]",
+      label: "开启的可选丢弃类别",
+      description: "规则文件 discard.optional 里的类别名，如 art",
+    },
     {
       name: "releaseOccupants",
       type: "boolean",

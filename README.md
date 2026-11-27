@@ -32,6 +32,18 @@ minFreeGiB = 700
 
 详见 [多盘配置、安全边界与验证](docs/multi-disk-pool.md)。
 
+## SVN 冲突规则
+
+更新、切换遇到的冲突按项目提供的规则文件自动处理：可丢弃类别（生成物等）和命中规则（内容相同、`.meta` 只差 guid、本地早已缺失）的取远端，其余保持阻塞；动手前先存档，可以恢复。workingCopyPool 在 `pool.toml` 配置：
+
+```toml
+[svnRules]
+file = "C:/path/to/osg/svn-rules.toml"
+enable = ["art"]
+```
+
+versionControl 的 `svn-update` 用 `onConflict = "rules"` 加 `rulesFile`、`rulesEnable`。规则格式、处理范围与存档见 [docs/svn-rules.md](docs/svn-rules.md)。旧的 `[hooks]` 已移除。
+
 ## 目录
 
 ```

@@ -7,10 +7,12 @@ import path from "node:path";
 import { UsageError } from "../../../shared/cli";
 import { prepareExclusiveAccess } from "../../../shared/occupants";
 import { appendLog } from "../../../shared/svn-run";
+import { applySvnRules, describeBlocked, RulesBlockedError, summarizeRules, type RulesOutcome } from "../../../shared/svn-resolve";
+import { discardSet, loadSvnRules, type SvnRules } from "../../../shared/svn-rules";
 import { svnCheckAndUpdate } from "../../../shared/svn-update";
 import { displayTime } from "../../../shared/time";
 import type { ToolRunContext } from "../../../shared/types";
-import { archiveChanges, createLink, isLink, linkExists, linkTarget, removeLink, samePath } from "./archive";
+import { archiveChanges, archiveRootFor, createLink, isLink, linkExists, linkTarget, removeLink, samePath } from "./archive";
 import { branchFromUrl, branchUrl, isBranchName, leaseUntil, loadConfig, sameUrl, type PoolConfig } from "./config";
 import {
   appendHistory,
@@ -39,7 +41,6 @@ import {
 import { applySparse, behindCount, Cancelled, isObstruction, sparseCheckout, svn, svnBusy, svnInfo, svnStatus, SvnError, type SvnCtx } from "./svn";
 import { describeSparse, isFullCheckout } from "./sparse";
 import { assertStorageParent, checkCreationSpace, minFreeFor, selectSlotPath, StorageOwnershipError } from "./storage";
-import { runBeforeUpdate } from "./hooks";
 
 export type Pool = {
   root: string;
@@ -59,6 +60,47 @@ export function openPool(ctx: ToolRunContext, now: () => Date = () => new Date()
 
 function svnCtx(pool: Pool): SvnCtx {
   return { ...pool.ctx, cwd: pool.root };
+}
+
+const loadedRules = new WeakMap<Pool, { rules: SvnRules; enable: string[] }>();
+
+/** 池配置了 [svnRules] 时读取并校验规则文件（每次运行读一次）；没配置返回 undefined。 */
+export function poolRules(pool: Pool): { rules: SvnRules; enable: string[] } | undefined {
+  const cfg = pool.config.svnRules;
+  if (!cfg) return undefined;
+  let loaded = loadedRules.get(pool);
+  if (!loaded) {
+    const rules = loadSvnRules(cfg.file);
+    discardSet(rules, cfg.enable);
+    loaded = { rules, enable: cfg.enable };
+    loadedRules.set(pool, loaded);
+  }
+  return loaded;
+}
+
+/** 按项目 SVN 规则处理槽位工作副本；存档放在 `patches/<分支>/<时间戳>`。没配置规则返回 undefined。 */
+async function runPoolRules(pool: Pool, wc: string, branch: string, phase: string, archiveDir?: string): Promise<RulesOutcome | undefined> {
+  const loaded = poolRules(pool);
+  if (!loaded) return undefined;
+  const sctx = svnCtx(pool);
+  return applySvnRules({
+    wc,
+    cwd: sctx.cwd,
+    run: (args, o) => svn(sctx, args, { wc, allowFail: o?.allowFail, timeoutMs: o?.timeoutMs }),
+    rules: loaded.rules,
+    enable: loaded.enable,
+    archiveRoot: archiveRootFor(pool.paths, branch),
+    archiveDir,
+    now: pool.now(),
+    phase,
+    cleanupLocks: true,
+    onStage: (message) => stage(pool, `${path.basename(wc)} ${message}`),
+  });
+}
+
+/** 阻塞原因写进状态文件前截短，完整清单在存档 rules.json 里。 */
+function shortReason(text: string): string {
+  return text.length > 600 ? `${text.slice(0, 600)}…` : text;
 }
 
 function stage(pool: Pool, message: string): void {
@@ -308,8 +350,9 @@ async function recoverSlot(pool: Pool, id: string, op: SlotOp, branch: string): 
     if (!ourOp(slot)) return false;
     slot.url = info!.url;
     slot.branch = complete ? target! : st.incomplete ? "" : actual;
-    slot.phase = "ready";
-    slot.blockedReason = undefined;
+    // 中断时可能留下冲突（更新/规则处理到一半）：保持阻塞，交给 refresh / gc 复查按规则再处理
+    slot.phase = st.problems.length ? "blocked" : "ready";
+    slot.blockedReason = st.problems.length ? `中断后遗留：${st.problems.join("；")}` : undefined;
     slot.op = undefined;
     return true;
   });
@@ -579,6 +622,15 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
 
   try {
     stage(pool, `${claimed.id}：存档本地改动`);
+    const ruled = await runPoolRules(pool, wc, from, "切换前");
+    if (ruled && ruled.blocked.length > 0) {
+      const reason = shortReason(describeBlocked(ruled));
+      await back({ phase: "blocked", blockedReason: reason });
+      notes.push(`${claimed.id}（${from}）有需要人处理的问题，已标为阻塞：${reason}`);
+      return "blocked";
+    }
+    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    if (ruleNote) notes.push(`${from} ${ruleNote}`);
     const archived = await archiveChanges(sctx, pool.paths, wc, from, pool.now());
     if (archived.blocked) {
       await back({ phase: "blocked", blockedReason: archived.blocked });
@@ -602,7 +654,25 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
 
   try {
     stage(pool, `${claimed.id}：svn switch ${url}`);
-    await svn(sctx, ["switch", "--ignore-ancestry", url, wc], { wc, progress: "切换" });
+    await svn(sctx, ["switch", "--ignore-ancestry", "--accept", "postpone", url, wc], { wc, progress: "切换" });
+    // 切换撞上未纳管文件等会留下冲突：有规则按规则处理，没有规则或处理不了就标阻塞，不当成就绪交出去
+    const ruled = await runPoolRules(pool, wc, branch, "切换后");
+    let leftover: string | undefined;
+    if (ruled) {
+      if (ruled.blocked.length > 0) leftover = describeBlocked(ruled);
+      const ruleNote = summarizeRules(ruled);
+      if (ruleNote) notes.push(`${branch} ${ruleNote}`);
+    } else {
+      const st = await svnStatus(sctx, wc);
+      if (st.problems.length > 0) leftover = `切换后有冲突：${st.problems.join("；")}`;
+    }
+    if (leftover) {
+      const reason = shortReason(leftover);
+      const info = await svnInfo(sctx, wc).catch(() => undefined);
+      await back({ phase: "blocked", blockedReason: reason, branch, url: info?.url ?? url });
+      notes.push(`${claimed.id} 切换到 ${branch} 后有需要人处理的问题，已标为阻塞：${reason}`);
+      return "blocked";
+    }
     const sparse = await applySparse(sctx, wc, pool.config.sparse);
     if (sparse.length) notes.push(`稀疏：${sparse.join("；")}`);
     return await finishCheck(pool, wc, url);
@@ -784,7 +854,7 @@ export async function gc(pool: Pool): Promise<GcReport> {
   const report: GcReport = { recovered: await recover(pool), unblocked: [], blocked: [], retired: [], pendingShrink: [], links: [], patches: 0, errors: [] };
   const sctx = svnCtx(pool);
 
-  // 复查阻塞槽位
+  // 复查阻塞槽位：配置了规则时先按规则处理（受保护、被租用、有 svn 进程、所有权未确认的不碰）
   for (const slot of readState(pool.paths).slots.filter((s) => s.phase === "blocked" && !s.op)) {
     const wc = slotDir(pool.paths, slot);
     try {
@@ -797,6 +867,13 @@ export async function gc(pool: Pool): Promise<GcReport> {
       if (!info) {
         report.blocked.push(`${slot.id} ${slot.branch}：工作副本不可访问，保留阻塞与记录`);
         continue;
+      }
+      if (poolRules(pool)) {
+        const reviewed = await reviewByRules(pool, slot, wc, info.url);
+        if (reviewed) {
+          report.blocked.push(`${slot.id} ${slot.branch}：${reviewed}`);
+          continue;
+        }
       }
       const st = await svnStatus(sctx, wc);
       if (st.problems.length > 0 || st.wcLocked) {
@@ -863,6 +940,50 @@ export async function gc(pool: Pool): Promise<GcReport> {
   return report;
 }
 
+/**
+ * gc 复查：占住槽位（op=update）按规则处理一次，再交还。
+ * 返回仍要阻塞的原因；返回 undefined 表示规则处理完了，交给后面的常规复查判断能否解除阻塞。
+ */
+async function reviewByRules(pool: Pool, slot: Slot, wc: string, url: string): Promise<string | undefined> {
+  const now = pool.now();
+  const claim = await mutate(pool.paths, (state) => {
+    const s = state.slots.find((x) => x.id === slot.id);
+    if (!s || s.phase !== "blocked" || s.op) return "已被其他任务处理";
+    if (isHeld(s)) return `受保护（${holdNames(s)}），不按规则处理`;
+    if (leaseActive(s.lease, now)) return `被占用${describeLease(s.lease, now)}，不按规则处理`;
+    if (s.ownershipUnconfirmed) return "目录所有权未确认";
+    s.op = { kind: "update", target: s.branch, pid: process.pid, at: now.toISOString() };
+    return undefined;
+  });
+  if (claim) return `${claim}：${slot.blockedReason ?? ""}`;
+  const release = async (patch: Partial<Slot>): Promise<void> => {
+    await mutate(pool.paths, (state) => {
+      const s = state.slots.find((x) => x.id === slot.id);
+      if (s && ourOp(s)) Object.assign(s, { op: undefined }, patch);
+    });
+  };
+  try {
+    if (await svnBusy(wc, pool.ctx.abortSignal)) {
+      await release({});
+      return `有 SVN 进程正在处理，下次再复查：${slot.blockedReason ?? ""}`;
+    }
+    const branch = slot.branch || branchFromUrl(pool.config, url) || "";
+    const ruled = await runPoolRules(pool, wc, branch, "复查");
+    if (ruled && ruled.blocked.length > 0) {
+      const reason = shortReason(describeBlocked(ruled));
+      await release({ blockedReason: reason });
+      return reason;
+    }
+    await release({});
+    const note = ruled ? summarizeRules(ruled) : "";
+    if (note) appendLog(pool.ctx.logFile, `[workingCopyPool] ${slot.id} ${note}`);
+    return undefined;
+  } catch (error) {
+    await release({});
+    throw error;
+  }
+}
+
 async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
   const wc = slotDir(pool.paths, claimed);
   const notes: string[] = [];
@@ -882,11 +1003,20 @@ async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
     if (linkExists(link) && samePath(linkTarget(link), wc)) await dropLink(pool, link, wc, notes);
   }
   if (existsSync(path.join(wc, ".svn"))) {
-    const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(async (error) => {
+    const fail = async (error: unknown): Promise<never> => {
       if (error instanceof Cancelled) throw error;
       await back({});
       throw error;
-    });
+    };
+    const ruled = await runPoolRules(pool, wc, claimed.branch, "回收前").catch(fail);
+    if (ruled && ruled.blocked.length > 0) {
+      const reason = shortReason(describeBlocked(ruled));
+      await back({ phase: "blocked", blockedReason: reason });
+      return `${claimed.id} 有需要人处理的问题，暂不删除：${reason}`;
+    }
+    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    if (ruleNote) notes.push(ruleNote);
+    const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(fail);
     if (archived.blocked) {
       await back({ phase: "blocked", blockedReason: archived.blocked });
       return `${claimed.id} 有需要人处理的问题，暂不删除：${archived.blocked}`;
@@ -1008,7 +1138,8 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
     if (slot.op) return { kind: "skip" as const, why: `${slot.id} 正在被另一个任务处理` };
     if (isHeld(slot)) return { kind: "skip" as const, why: `${slot.id} 受保护（${holdNames(slot)}），不更新` };
     if (slot.ownershipUnconfirmed) return { kind: "skip" as const, why: `${slot.id} 目录所有权未确认，需人工检查` };
-    const retryBlocked = slot.phase === "blocked" && pool.config.hooks?.retryBlocked === true;
+    const rulesOn = Boolean(pool.config.svnRules);
+    const retryBlocked = slot.phase === "blocked" && rulesOn;
     if (slot.phase === "blocked" && !retryBlocked) return { kind: "skip" as const, why: `${slot.id} 阻塞：${slot.blockedReason ?? ""}` };
     if (slot.phase !== "ready" && !retryBlocked) return { kind: "skip" as const, why: `${slot.id} ${slot.phase}` };
     if (leaseActive(slot.lease, now)) return { kind: "skip" as const, why: `${slot.id} 被占用${describeLease(slot.lease, now)}，不抢` };
@@ -1024,13 +1155,11 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
   stage(pool, `更新 ${branch}（${claim.slot.id}）`);
   try {
     assertStorageParent(wc);
-    if (pool.config.hooks?.beforeUpdate) {
-      if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("有 SVN 进程正在处理槽位，未执行项目钩子");
-      await releaseSlotOccupants(pool, wc);
-      await runBeforeUpdate(pool.config, pool.ctx, wc);
-      const status = await svnStatus(sctx, wc);
-      if (status.problems.length) throw new Error(`项目钩子后仍有需要人工处理的问题：${status.problems.join("；")}`);
-      if (status.switched) throw new Error("项目钩子后仍有 switched 路径，保留现场，请人工确认分支归属");
+    const loaded = poolRules(pool);
+    if (loaded) {
+      if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("有 SVN 进程正在处理槽位，未按规则处理");
+      const released = await releaseSlotOccupants(pool, wc);
+      if (released) appendLog(pool.ctx.logFile, `[workingCopyPool] ${claim.slot.id} ${released}`);
     }
     const result = await svnCheckAndUpdate({
       workingCopy: wc,
@@ -1038,7 +1167,8 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
       logFile: pool.ctx.logFile,
       abortSignal: pool.ctx.abortSignal,
       skipUpdate: false,
-      onConflict: "fail",
+      onConflict: loaded ? "rules" : "fail",
+      ...(loaded ? { rules: { rules: loaded.rules, enable: loaded.enable, archiveRoot: archiveRootFor(pool.paths, branch), now: pool.now() } } : {}),
       releaseOccupants: true,
       onProgress: (message, percent) => pool.ctx.onProgress?.(`${branch}：${message}`, percent),
     });
@@ -1053,12 +1183,23 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
       if (behind !== undefined) slot.behind = behind;
     });
     const last = result.detail.split(/\r?\n/).filter(Boolean).pop() ?? "完成";
-    return { branch, ok: true, detail: `已更新（${claim.slot.id}，落后 ${behind ?? "未知"}）${sparse.length ? `；稀疏：${sparse.join("；")}` : ""}；${last}` };
+    const ruleNote = result.detail.split("；").filter((part) => part.includes("规则处理")).join("；");
+    return {
+      branch,
+      ok: true,
+      detail: `已更新（${claim.slot.id}，落后 ${behind ?? "未知"}）${sparse.length ? `；稀疏：${sparse.join("；")}` : ""}${ruleNote && !last.includes(ruleNote) ? `；${ruleNote}` : ""}；${last}`,
+    };
   } catch (error) {
     if (error instanceof Cancelled || pool.ctx.abortSignal.aborted) throw error;
+    const blockedReason = error instanceof RulesBlockedError ? shortReason(error.message) : undefined;
     await mutate(pool.paths, (state) => {
       const slot = state.slots.find((s) => s.id === claim.slot.id);
-      if (slot && ourOp(slot)) slot.op = undefined;
+      if (!slot || !ourOp(slot)) return;
+      slot.op = undefined;
+      if (blockedReason) {
+        slot.phase = "blocked";
+        slot.blockedReason = blockedReason;
+      }
     });
     throw error;
   }

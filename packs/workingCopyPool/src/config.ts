@@ -24,19 +24,20 @@ export type PoolConfig = {
   patchRetentionDays: number;
   /** roots 至少一项；minFreeGiB 是没有单独写下限的目录使用的默认值。 */
   storage: { roots: StorageRoot[]; minFreeGiB: number };
-  hooks?: { beforeUpdate?: string[]; retryBlocked: boolean };
+  /** 项目 SVN 规则（svn-rules.toml）：冲突与可丢弃类别按规则自动处理；不配置时冲突一律阻塞。 */
+  svnRules?: { file: string; enable: string[] };
 };
 
 export class ConfigError extends UsageError {}
 
 export const CONFIG_FILE = "pool.toml";
 
-const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "projects", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
+const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "projects", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "svnRules"]);
 const BRANCH_KEYS = new Set(["pattern", "listFrom", "recentDays"]);
 const SPARSE_KEYS = new Set(["exclude", "root", "depth"]);
 const STORAGE_KEYS = new Set(["roots", "minFreeGiB"]);
 const ROOT_KEYS = new Set(["path", "minFreeGiB"]);
-const HOOK_KEYS = new Set(["beforeUpdate", "retryBlocked"]);
+const SVN_RULES_KEYS = new Set(["file", "enable"]);
 
 /** 时长：`30m`、`12h`、`1d`、`2w`，或 `forever`。 */
 export const TTL_RE = /^(\d+)(m|h|d|w)$/;
@@ -97,6 +98,9 @@ export function parseConfig(text: string): PoolConfig {
 
   if (raw.resident !== undefined) {
     fail("", "resident", "已移除：池里不再有常驻分支，需要的分支（包括 trunk）都写进 projects");
+  }
+  if (raw.hooks !== undefined) {
+    fail("hooks", undefined, "已移除：改用 [svnRules]（file = 项目 svn-rules.toml 的绝对路径，enable = 开启的可选丢弃类别）");
   }
   for (const key of Object.keys(raw)) {
     if (!TOP_KEYS.has(key)) fail("", key, "未知字段");
@@ -159,13 +163,17 @@ export function parseConfig(text: string): PoolConfig {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
 
-  const h = table("hooks", HOOK_KEYS);
-  const beforeUpdate = h.beforeUpdate === undefined ? undefined : strList("hooks", "beforeUpdate", h.beforeUpdate);
-  if (beforeUpdate && (beforeUpdate.length === 0 || beforeUpdate.length > 64 || beforeUpdate.some((v) => /[\u0000-\u001f]/.test(v)))) {
-    fail("hooks", "beforeUpdate", "应为非空命令 argv 数组（最多 64 项，不含控制字符）；不会经过 shell");
+  let svnRules: PoolConfig["svnRules"];
+  if (raw.svnRules !== undefined) {
+    const r = table("svnRules", SVN_RULES_KEYS);
+    const file = str("svnRules", "file", r.file);
+    if (!path.isAbsolute(file) || /[\u0000-\u001f]/.test(file)) fail("svnRules", "file", `应为本机绝对路径：${file}`);
+    const enable = strList("svnRules", "enable", r.enable);
+    for (const name of enable) {
+      if (!/^[A-Za-z][\w-]*$/.test(name)) fail("svnRules", "enable", `类别名不合法：${name}`);
+    }
+    svnRules = { file: path.normalize(file), enable: [...new Set(enable)] };
   }
-  if (h.retryBlocked !== undefined && typeof h.retryBlocked !== "boolean") fail("hooks", "retryBlocked", "应为布尔值");
-  if (h.retryBlocked === true && !beforeUpdate) fail("hooks", "retryBlocked", "需同时配置 beforeUpdate，默认不重试阻塞槽位");
 
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
@@ -186,7 +194,7 @@ export function parseConfig(text: string): PoolConfig {
     sparse,
     patchRetentionDays,
     storage,
-    ...(raw.hooks !== undefined ? { hooks: { beforeUpdate, retryBlocked: h.retryBlocked === true } } : {}),
+    ...(svnRules ? { svnRules } : {}),
   };
 }
 

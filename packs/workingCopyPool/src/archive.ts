@@ -1,10 +1,13 @@
 /**
  * 改动存档（PRD「改动存档」）与虚拟入口链接。
  */
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { archiveStamp, createArchiveDir, toRelativePatch } from "../../../shared/svn-archive";
 import { branchDirName, type PoolPaths } from "./state";
 import { svn, svnStatus, type StatusSummary, type SvnCtx } from "./svn";
+
+export { archiveStamp, toRelativePatch };
 
 export type ArchiveResult = {
   /** 存档目录；没有改动时为空。 */
@@ -15,9 +18,9 @@ export type ArchiveResult = {
   blocked?: string;
 };
 
-export function archiveStamp(now: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+/** 池里某个分支的存档根：`patches/<分支目录名>`。 */
+export function archiveRootFor(paths: PoolPaths, branch: string): string {
+  return path.join(paths.patches, branchDirName(branch || "_unknown"));
 }
 
 /**
@@ -40,10 +43,7 @@ export async function archiveChanges(
   if (st.versioned.length === 0 && st.unversioned.length === 0) {
     return { versioned: 0, unversioned: 0 };
   }
-  const base = path.join(paths.patches, branchDirName(branch || "_unknown"), archiveStamp(now));
-  let dir = base;
-  for (let i = 2; existsSync(dir); i++) dir = `${base}_${i}`;
-  mkdirSync(dir, { recursive: true });
+  const dir = createArchiveDir(archiveRootFor(paths, branch), now);
 
   if (st.versioned.length > 0) {
     const diff = await svn(ctx, ["diff", "--internal-diff", wc], { timeoutMs: Math.min(ctx.timeoutMs, 30 * 60_000) });
@@ -85,16 +85,6 @@ export async function archiveChanges(
     "utf8",
   );
   return { dir, versioned: st.versioned.length, unversioned: st.unversioned.length };
-}
-
-/** svn diff 以绝对路径为目标时 Index 行是绝对路径；改成相对工作副本根，svn patch 才能在别处应用。 */
-export function toRelativePatch(diff: string, wc: string): string {
-  const variants = [wc, wc.replace(/\\/g, "/")].map((p) => p.replace(/[\\/]+$/, ""));
-  let out = diff;
-  for (const v of new Set(variants)) {
-    out = out.split(`${v}/`).join("").split(`${v}\\`).join("");
-  }
-  return out;
 }
 
 /** 链接是否存在（含断链）。 */

@@ -5,6 +5,7 @@
 - 讨论来源：2026-11-16 与用户讨论 OSG 多分支工程的磁盘管理。结论：池子是独立的通用能力包，放在本仓，由 novoard-agent 调度；交互入口全部复用 agent 现有机制（磁贴、带 inputs 的磁贴、内置会话、定时）
 - 依赖：novoard-agent 仓 ADR-0019（能力包协议）、ADR-0020（磁贴运行时输入与查询工具）
 - 修订（2026-11-27）：常驻分支断代删除，改为工程清单 `projects`；槽位只放在 `[storage].roots` 里，池定义目录下不再有 `slots/`；新增池外改动校正
+- 修订（2026-11-27）：新增 `[svnRules]`，冲突按项目规则文件自动处理，`[hooks]` 移除，见 [SVN 冲突规则](../svn-rules.md)
 
 ## 背景
 
@@ -182,6 +183,11 @@ root = "empty"
 "client/Packages"       = "infinity"
 "client/Assets/UI"      = "infinity"
 "client/Assets/UI/Big"  = "exclude"
+
+# 可选：项目 SVN 冲突规则，见 docs/svn-rules.md
+[svnRules]
+file = "C:/path/to/osg/svn-rules.toml"
+enable = ["art"]
 ```
 
 - 配置由用户手写，工具只读不写。
@@ -189,6 +195,7 @@ root = "empty"
 - 解析用打进 `dist/pack.mjs` 的 TOML 库，不引入运行时依赖。
 - 校验失败时所有工具以退出码 64 失败，result json 写明哪一行哪个字段。
 - `resident` 已断代删除，写了按配置错误报出，提示把需要的分支（包括 trunk）都写进 `projects`。
+- `[svnRules]` 可选：`file` 为项目规则文件的本机绝对路径，`enable` 为开启的可选丢弃类别。规则文件在每次处理时读取，写错时本次操作失败、不动工作副本。旧的 `[hooks]` 已移除，写了按配置错误报出。
 
 ### 多盘存储（2026-11-23，2026-11-27 改为必填）
 
@@ -309,9 +316,9 @@ root = "empty"
 
 **`refresh`**，无参数。对工程清单里的每个分支：
 
-- 已挂在槽位上：`svn update`，再按 `[sparse]` 重新应用稀疏规则，最后读回落后 revision。
+- 已挂在槽位上：`svn update`，再按 `[sparse]` 重新应用稀疏规则，最后读回落后 revision。配置了 `[svnRules]` 时，更新前后各按规则处理一次，处理不了的标阻塞。
 - 没挂槽：跳过，报告“未挂槽（按需占用时分配）”。refresh 不新建、不切换、不为工程抢槽位。
-- 被占用、受保护、阻塞或正被别的任务处理：跳过并报告原因，不抢。
+- 被占用、受保护或正被别的任务处理：跳过并报告原因，不抢。阻塞的槽位没配置 `[svnRules]` 时跳过，配置了就重试，处理干净即恢复 `ready`。
 
 任一工程失败不影响其他工程，最后按失败数决定退出码。`projects` 为空时什么都不做并标 `skipped`。
 
@@ -351,9 +358,11 @@ root = "empty"
 3. 未纳入版本控制且未被忽略的文件：只把清单写入存档目录，不删除。它们阻碍 switch 时（svn 报 obstruction），槽位标为 `blocked`。
 4. 冲突、树冲突、外部锁：不处理，槽位标为 `blocked`，原因写入 `blockedReason`。
 
+配置了 `[svnRules]` 时，存档前先按规则处理：可丢弃类别与命中规则的冲突取远端，可丢弃类别的本地改动还原、switched 子路径切回，被处理的本地内容先存进 `patches/<分支>/<时间>/`；规则覆盖不到的冲突仍按第 4 步阻塞。详见 [SVN 冲突规则](../svn-rules.md)。
+
 被忽略的文件（如 `Library`）不在 `svn status` 默认输出里，池子不碰。
 
-`blocked` 的槽位不参与选择，直到用户处理后由下一次 gc 复查恢复为 `ready`。
+`blocked` 的槽位不参与选择，直到用户处理后由下一次 gc 复查恢复为 `ready`；配置了 `[svnRules]` 时 gc 复查和 refresh 会先按规则处理一次。
 
 ### 中断恢复
 

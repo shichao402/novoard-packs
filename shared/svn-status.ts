@@ -78,7 +78,58 @@ function attr(source: string | undefined, name: string): string | undefined {
   return new RegExp(`(?:^|\\s)${name}="([^"]*)"`, "i").exec(source)?.[1];
 }
 
-function decodeXml(value: string): string {
+/** `svn status --xml` 的单个条目（工作副本侧）。path 为 svn 输出原样，正斜杠。 */
+export type StatusItem = {
+  path: string;
+  item: string;
+  props: string;
+  treeConflicted: boolean;
+  wcLocked: boolean;
+  switched: boolean;
+  /** 带历史的添加（`A +`），树冲突 delete×edit 的本地一侧就是这种。 */
+  copied: boolean;
+  /** 本工作副本持有 svn lock 令牌（外部锁）。 */
+  locked: boolean;
+};
+
+export function parseStatusItems(xml: string): StatusItem[] {
+  const out: StatusItem[] = [];
+  const re = /<entry\b([^>]*)>([\s\S]*?)<\/entry>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(xml))) {
+    const p = /\bpath="([^"]*)"/.exec(match[1])?.[1];
+    const wc = /<wc-status\b([^>]*)>([\s\S]*?)<\/wc-status>|<wc-status\b([^>]*)\/>/.exec(match[2]);
+    if (p === undefined || !wc) continue;
+    const attrs = wc[1] ?? wc[3] ?? "";
+    const body = wc[2] ?? "";
+    const get = (name: string): string | undefined => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
+    out.push({
+      path: decodeXml(p).replace(/\\/g, "/"),
+      item: get("item") ?? "normal",
+      props: get("props") ?? "none",
+      treeConflicted: get("tree-conflicted") === "true",
+      wcLocked: get("wc-locked") === "true",
+      switched: get("switched") === "true",
+      copied: get("copied") === "true",
+      locked: /<lock>/.test(body),
+    });
+  }
+  return out;
+}
+
+/** svn 输出的路径（绝对，或在 cwd 之下时相对 cwd）转成相对工作副本根、正斜杠；根本身为 "."。 */
+export function relativeTo(wc: string, p: string, cwd?: string): string {
+  const resolved = Boolean(cwd) && !path.isAbsolute(p);
+  const norm = (resolved ? path.resolve(cwd!, p) : p).replace(/\\/g, "/");
+  // 相对路径 resolve 后带盘符（win32），根目录也同样 resolve 才能比较
+  const root = (resolved ? path.resolve(wc) : wc).replace(/\\/g, "/").replace(/\/+$/, "");
+  const fold = (s: string): string => (process.platform === "win32" ? s.toLowerCase() : s);
+  if (fold(norm) === fold(root)) return ".";
+  if (fold(norm).startsWith(`${fold(root)}/`)) return norm.slice(root.length + 1);
+  return norm;
+}
+
+export function decodeXml(value: string): string {
   return value
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
@@ -177,12 +228,12 @@ export function isSvnLockError(text: string): boolean {
   );
 }
 
-/** svn update 输出里抓冲突路径：首列 C=文本冲突，第二列 C=树冲突。 */
+/** svn update 输出里抓冲突路径：前 4 列状态位（文本、属性、锁、树）任一为 C。 */
 export function conflictedRelativesFromUpdateOutput(stdout: string): string[] {
   const found: string[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^(C\s{2,}|\s+C\s{2,})(.+)$/.exec(line);
-    if (match) {
+    const match = /^([ADUCGERB ]{4}) (\S.*)$/.exec(line);
+    if (match && match[1].includes("C")) {
       found.push(match[2].trim());
     }
   }

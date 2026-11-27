@@ -13,8 +13,10 @@ const cronkitTools: ToolManifest[] = JSON.parse(
   readFileSync(path.join(here, "fixtures", "cronkit-builtin-tools.json"), "utf8"),
 );
 const NEW_TOOLS = new Set(["release-occupants", "unity-open"]);
-// cronkit 由步骤 timeout 承担、迁移后需单列的参数
-const NEW_PARAMS: Record<string, string[]> = { "quit-idle": ["timeout"] };
+// cronkit 由步骤 timeout 承担、迁移后需单列的参数；svn-update 的规则文件参数是迁移后新增
+const NEW_PARAMS: Record<string, string[]> = { "quit-idle": ["timeout"], "svn-update": ["rulesFile", "rulesEnable"] };
+// 迁移后扩展了取值的参数：比较时换回 cronkit 原样，新取值由单独用例校验
+const EXTENDED_PARAMS: Record<string, string[]> = { "svn-update": ["onConflict"] };
 
 // cronkit 用 `path` 在 target 工程根下取子目录；迁移后由步骤的 cwd 承担，工具不读，已删除。
 // release-occupants 的 path 是新工具自己的必填参数，不在此列（它也不在 cronkit 基准里）。
@@ -30,8 +32,10 @@ function withoutPlatforms({ platforms: _platforms, ...rest }: ToolManifest): Too
   const extra = NEW_PARAMS[rest.id] ?? [];
   if (!rest.params) return rest;
   const origin = new Map((baseline.get(rest.id)?.params ?? []).map((p) => [p.name, p]));
+  const extended = EXTENDED_PARAMS[rest.id] ?? [];
   const params = rest.params
     .filter((p) => !extra.includes(p.name))
+    .map((p) => (extended.includes(p.name) ? (origin.get(p.name) ?? p) : p))
     .map(({ label: _label, format: _format, ...p }) => {
       if (origin.get(p.name)?.description === undefined) delete p.description;
       return p;
@@ -86,6 +90,18 @@ describe("manifest 与 cronkit builtin 一致", () => {
     const tool = general.tools.find((t) => t.id === "quit-idle");
     expect(tool?.params?.find((p) => p.name === "timeout")).toMatchObject({ name: "timeout", type: "string", format: "duration" });
     expect(tool?.params?.find((p) => p.name === "timeout")?.required).toBeUndefined();
+  });
+
+  it("svn-update：onConflict 新增 rules，rulesFile/rulesEnable 可选且紧随 backupDir", () => {
+    const tool = versionControl.tools.find((t) => t.id === "svn-update");
+    const names = (tool?.params ?? []).map((p) => p.name);
+    expect(names.slice(names.indexOf("backupDir"), names.indexOf("backupDir") + 3)).toEqual(["backupDir", "rulesFile", "rulesEnable"]);
+    const byName = Object.fromEntries((tool?.params ?? []).map((p) => [p.name, p]));
+    expect(byName.onConflict).toMatchObject({ type: "enum", enum: ["fail", "postpone", "revert", "rules"], default: "fail" });
+    expect(byName.onConflict.description).toContain("rules:");
+    expect(byName.rulesFile).toMatchObject({ type: "string", format: "path" });
+    expect(byName.rulesEnable).toMatchObject({ type: "string[]" });
+    expect(byName.rulesFile.required ?? byName.rulesEnable.required).toBeUndefined();
   });
 
   it("release-occupants：path 必填，extraFiles 可选", () => {

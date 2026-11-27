@@ -7,21 +7,40 @@ import path from "node:path";
 import { runCommand } from "./exec";
 import { prepareExclusiveAccess } from "./occupants";
 import { appendLog, cleanupAfterInterrupt, INTERRUPT_CLEANUP_MS, SVN_GRACEFUL_MS } from "./svn-run";
+import { applySvnRules, RulesBlockedError, summarizeRules } from "./svn-resolve";
+import { categoryOf, discardSet, type SvnRules } from "./svn-rules";
 import {
   conflictedRelativesFromUpdateOutput,
   createUpdateProgress,
   isSvnLockError,
+  parseStatusItems,
   parseSvnStatusXml,
   pathsFromSvnError,
   relativeFromStatusPath,
+  relativeTo,
   resolveWriteTargets,
   revertWriteRelatives,
   updateWriteRelatives,
 } from "./svn-status";
 
 export { cleanupAfterInterrupt, INTERRUPT_CLEANUP_MS, SVN_GRACEFUL_MS };
+export { RulesBlockedError };
 
-export type ConflictPolicy = "fail" | "postpone" | "revert";
+/**
+ * fail：有冲突就报错保留现场；postpone：挂起；revert：备份后整树还原；
+ * rules：按项目 SVN 规则处理（可丢弃类别取远端/还原、命中规则取远端，其余阻塞），先存档再动手。
+ */
+export type ConflictPolicy = "fail" | "postpone" | "revert" | "rules";
+
+/** onConflict=rules 的输入。 */
+export type SvnRulesInput = {
+  rules: SvnRules;
+  /** 开启的可选类别。 */
+  enable: readonly string[];
+  /** 存档根；需要存档时在下面建 `<时间戳>` 目录。 */
+  archiveRoot: string;
+  now?: Date;
+};
 
 export async function svnCheckAndUpdate(options: {
   workingCopy: string;
@@ -30,13 +49,15 @@ export async function svnCheckAndUpdate(options: {
   abortSignal: AbortSignal;
   skipUpdate: boolean;
   onConflict?: ConflictPolicy;
+  /** onConflict=rules 时必填。 */
+  rules?: SvnRulesInput;
   backupOnRevert?: boolean;
   backupDir?: string;
   localDate?: string;
   releaseOccupants?: boolean;
   /** 阶段与文件计数进度（P5）；percent 未知时为 null。 */
   onProgress?: (message: string, percent?: number | null) => void;
-}): Promise<{ skipped: boolean; detail: string; code: number | null }> {
+}): Promise<{ skipped: boolean; detail: string; code: number | null; rulesArchiveDir?: string }> {
   if (!existsSync(options.workingCopy)) {
     throw new Error(`目录不存在: ${options.workingCopy}`);
   }
@@ -48,9 +69,37 @@ export async function svnCheckAndUpdate(options: {
   const policy = options.onConflict ?? "fail";
   const notes: string[] = [];
   const canRelease = options.releaseOccupants === true && process.platform === "win32";
+  const rulesInput = options.rules;
+  if (policy === "rules" && !rulesInput) {
+    throw new Error("onConflict=rules 需要提供 SVN 规则文件");
+  }
+  let rulesArchiveDir: string | undefined;
+  const runRules = async (phase: string, forceArchive: string[] = []): Promise<void> => {
+    const outcome = await applySvnRules({
+      wc: options.workingCopy,
+      cwd: options.workingCopy,
+      run: (args, o) => runSvn(options, [...args, "--non-interactive"], `svn ${args[0]}`, o?.allowFail ?? false),
+      rules: rulesInput!.rules,
+      enable: rulesInput!.enable,
+      archiveRoot: rulesInput!.archiveRoot,
+      archiveDir: rulesArchiveDir,
+      now: rulesInput!.now ?? new Date(),
+      phase,
+      forceArchive,
+      cleanupLocks: true,
+      onStage: stage,
+    });
+    rulesArchiveDir = outcome.archiveDir;
+    for (const note of outcome.notes) if (!notes.includes(note)) notes.push(note);
+    const summary = summarizeRules(outcome);
+    if (summary) notes.push(`${phase}${summary}`);
+    if (outcome.blocked.length > 0) throw new RulesBlockedError(outcome);
+  };
+  const done = (result: { skipped: boolean; detail: string; code: number | null }) =>
+    rulesArchiveDir ? { ...result, rulesArchiveDir } : result;
 
   if (existsSync(path.join(options.workingCopy, ".svn", "lock"))) {
-    if (policy !== "revert") {
+    if (policy !== "revert" && policy !== "rules") {
       throw new Error("工作副本有 in-progress 锁（.svn/lock），未执行 cleanup");
     }
     if (canRelease) {
@@ -78,6 +127,7 @@ export async function svnCheckAndUpdate(options: {
   const predicted = predictWriteRelatives(statusXml, incomingXml, {
     skipUpdate: options.skipUpdate,
     willRevertProblems: policy === "revert" && Boolean(findSvnProblem(status.stdout)),
+    extraLocal: policy === "rules" ? rulesLocalWrites(options.workingCopy, status.stdout, rulesInput!) : [],
   });
   logWriteSet(options.logFile, predicted, incomingXml ? "update" : "local");
 
@@ -93,7 +143,10 @@ export async function svnCheckAndUpdate(options: {
   }
 
   const problem = findSvnProblem(status.stdout);
-  if (problem) {
+  if (policy === "rules") {
+    // 冲突、可丢弃类别的本地改动、switched 路径都交给规则；将与远端合并的本地修改先存档
+    await runRules("更新前", mergeTargets(options.workingCopy, incomingXml));
+  } else if (problem) {
     if (policy === "postpone") {
       return {
         skipped: true,
@@ -116,7 +169,7 @@ export async function svnCheckAndUpdate(options: {
   }
 
   if (options.skipUpdate) {
-    return { skipped: true, detail: notes.join("；") || "按策略跳过 svn update", code: 0 };
+    return done({ skipped: true, detail: notes.join("；") || "按策略跳过 svn update", code: 0 });
   }
 
   stage(incomingXml ? `开始更新，远端变更约 ${predicted.incoming} 个路径` : "开始更新");
@@ -139,18 +192,20 @@ export async function svnCheckAndUpdate(options: {
   if (update.code === 0) {
     counter.finish();
     const conflicts = [...updateConflicts];
-    if (conflicts.length > 0 && policy === "postpone") {
+    if (conflicts.length > 0 && policy === "rules") {
+      notes.push(`svn update 产生 ${conflicts.length} 个冲突，按规则处理`);
+      await runRules("更新后");
+    } else if (conflicts.length > 0 && policy === "postpone") {
       return {
         skipped: true,
         detail: `svn update 产生 ${conflicts.length} 个冲突，按 onConflict=postpone 保留现场挂起，处理完下轮自动继续:\n  ${conflicts.slice(0, 20).join("\n  ")}`,
         code: 0,
       };
-    }
-    if (conflicts.length > 0) {
+    } else if (conflicts.length > 0) {
       throw new Error(`svn update 产生 ${conflicts.length} 个冲突:\n  ${conflicts.slice(0, 20).join("\n  ")}`);
     }
     notes.push(tail(update.stdout) || "svn update 完成");
-    return { skipped: false, detail: notes.join("；"), code: update.code };
+    return done({ skipped: false, detail: notes.join("；"), code: update.code });
   }
 
   const updateProblem =
@@ -164,10 +219,11 @@ export async function svnCheckAndUpdate(options: {
     notes.push("更新被文件独占打断，cleanup 并释放占用后重试");
     await runSvn(options, ["cleanup"], "svn cleanup", true);
     await releasePredicted(options, [...predicted.rels, ...extra], "update 独占重试");
-    const retry = await runSvn(options, ["update"], "svn update retry", true);
+    const retry = await runSvn(options, ["update", "--non-interactive", "--accept", "postpone"], "svn update retry", true);
     if (retry.code === 0) {
       notes.push("释放占用后已重新 update");
-      return { skipped: false, detail: [...notes, tail(retry.stdout) || "svn update 完成"].join("；"), code: retry.code };
+      if (policy === "rules") await runRules("更新后");
+      return done({ skipped: false, detail: [...notes, tail(retry.stdout) || "svn update 完成"].join("；"), code: retry.code });
     }
   }
 
@@ -212,13 +268,14 @@ export async function svnRevertTree(options: {
 function predictWriteRelatives(
   localXml: string,
   incomingXml: string | undefined,
-  options: { skipUpdate: boolean; willRevertProblems: boolean },
+  options: { skipUpdate: boolean; willRevertProblems: boolean; extraLocal?: string[] },
 ): { rels: string[]; incoming: number; local: number } {
   const localEntries = parseSvnStatusXml(localXml);
   const local = revertWriteRelatives(localEntries);
+  const extra = options.extraLocal ?? [];
   if (options.skipUpdate) {
     return {
-      rels: options.willRevertProblems ? local : [],
+      rels: options.willRevertProblems ? local : extra,
       incoming: 0,
       local: local.length,
     };
@@ -227,8 +284,34 @@ function predictWriteRelatives(
   const incoming = updateWriteRelatives(incomingEntries, false);
   const rels = options.willRevertProblems
     ? [...new Set([...incoming, ...local])]
-    : incoming;
+    : [...new Set([...incoming, ...extra])];
   return { rels, incoming: incoming.length, local: local.length };
+}
+
+/** 规则可能改写的本地路径：冲突条目，以及可丢弃类别里的本地改动。 */
+function rulesLocalWrites(wc: string, localXml: string, input: SvnRulesInput): string[] {
+  const discard = discardSet(input.rules, input.enable);
+  const out: string[] = [];
+  for (const it of parseStatusItems(localXml)) {
+    const rel = relativeTo(wc, it.path, wc);
+    if (rel === ".") continue;
+    const conflicted = it.item === "conflicted" || it.props === "conflicted" || it.treeConflicted;
+    const dirty = conflicted || ["modified", "added", "deleted", "replaced", "missing"].includes(it.item) || it.props === "modified";
+    if (!dirty) continue;
+    const cat = categoryOf(input.rules, rel);
+    if (conflicted || (cat && discard.has(cat.name))) out.push(relativeFromStatusPath(rel));
+  }
+  return out;
+}
+
+/** update 会把远端改动合并进来的本地修改（本地 M/R，远端 M/R/D）；规则先把它们存档。 */
+function mergeTargets(wc: string, incomingXml: string | undefined): string[] {
+  if (!incomingXml) return [];
+  const incoming = new Set(["modified", "replaced", "deleted"]);
+  return parseSvnStatusXml(incomingXml)
+    .filter((e) => (e.wcItem === "modified" || e.wcItem === "replaced") && e.reposItem !== undefined && incoming.has(e.reposItem))
+    .map((e) => relativeTo(wc, e.path.replace(/\\/g, "/"), wc))
+    .filter((rel) => rel !== ".");
 }
 
 function logWriteSet(
@@ -296,8 +379,8 @@ async function runSvn(
     abortSignal: options.abortSignal,
     gracefulMs: SVN_GRACEFUL_MS,
     onStdoutLine,
-    // status --xml 要整份解析（写集预测、冲突判断、备份清单）；update/revert 输出只看尾部
-    fullStdout: args[0] === "status",
+    // status/info/diff/list 的输出要整份解析（写集预测、冲突判断、存档）；update/revert 输出只看尾部
+    fullStdout: ["status", "info", "diff", "list"].includes(args[0]),
   }).done;
   if (result.cancelled) {
     const note = await cleanupAfterInterrupt(args, { cwd: options.workingCopy, logFile: options.logFile });
@@ -356,7 +439,7 @@ async function backupDirty(
   return destRoot;
 }
 
-function resolveBackupRoot(workingCopy: string, backupDir?: string): string {
+export function resolveBackupRoot(workingCopy: string, backupDir?: string): string {
   if (backupDir) {
     return path.isAbsolute(backupDir) ? backupDir : path.resolve(workingCopy, backupDir);
   }
@@ -387,7 +470,7 @@ function conflictedRelatives(statusXml: string): string {
 }
 
 function findSvnProblem(xml: string): string | undefined {
-  if (/item="conflicted"/.test(xml) || />conflicted</.test(xml)) {
+  if (/item="conflicted"/.test(xml) || />conflicted</.test(xml) || /props="conflicted"/.test(xml) || /tree-conflicted="true"/.test(xml)) {
     return "工作副本存在冲突";
   }
   if (/item="obstructed"/.test(xml)) {

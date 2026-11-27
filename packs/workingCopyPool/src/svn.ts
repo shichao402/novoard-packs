@@ -8,7 +8,7 @@ import path from "node:path";
 import { runCommand, spawnCaptured } from "../../../shared/exec";
 import { listOccupants } from "../../../shared/occupants";
 import { cleanupAfterInterrupt, SVN_GRACEFUL_MS, tailLines } from "../../../shared/svn-run";
-import { createUpdateProgress } from "../../../shared/svn-status";
+import { createUpdateProgress, parseStatusItems, relativeTo, type StatusItem } from "../../../shared/svn-status";
 import type { ToolRunContext } from "../../../shared/types";
 import { isDepth, isFullCheckout, joinRel, SparsePlan, type Depth, type DirDepth, type SparseSpec } from "./sparse";
 
@@ -104,40 +104,10 @@ export async function svnInfo(ctx: SvnCtx, target: string, extra: string[] = [])
   return parseInfoXml(result.stdout)[0];
 }
 
-export type StatusItem = {
-  path: string;
-  item: string;
-  props: string;
-  treeConflicted: boolean;
-  wcLocked: boolean;
-  switched: boolean;
-  /** 本工作副本持有 svn lock 令牌（外部锁）。 */
-  locked: boolean;
-};
-
-export function parseStatusXml(xml: string): StatusItem[] {
-  const out: StatusItem[] = [];
-  const re = /<entry\b([^>]*)>([\s\S]*?)<\/entry>/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(xml))) {
-    const p = /\bpath="([^"]*)"/.exec(match[1])?.[1];
-    const wc = /<wc-status\b([^>]*)>([\s\S]*?)<\/wc-status>|<wc-status\b([^>]*)\/>/.exec(match[2]);
-    if (p === undefined || !wc) continue;
-    const attrs = wc[1] ?? wc[3] ?? "";
-    const body = wc[2] ?? "";
-    const attr = (name: string): string | undefined => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
-    out.push({
-      path: unescapeXml(p).replace(/\\/g, "/"),
-      item: attr("item") ?? "normal",
-      props: attr("props") ?? "none",
-      treeConflicted: attr("tree-conflicted") === "true",
-      wcLocked: attr("wc-locked") === "true",
-      switched: attr("switched") === "true",
-      locked: /<lock>/.test(body),
-    });
-  }
-  return out;
-}
+export type { StatusItem } from "../../../shared/svn-status";
+/** 解析已移到 shared/svn-status，保留原名给池内与测试使用。 */
+export const parseStatusXml = parseStatusItems;
+export const relTo = relativeTo;
 
 export type StatusSummary = {
   /** 受版本控制的改动（修改、添加、删除、替换、丢失、属性改动）。 */
@@ -185,17 +155,6 @@ export function summarizeStatus(items: StatusItem[]): StatusSummary {
 export async function svnStatus(ctx: SvnCtx, wc: string, timeoutMs?: number): Promise<StatusSummary> {
   const result = await svn(ctx, ["status", "--xml", wc], { timeoutMs: timeoutMs ?? Math.min(ctx.timeoutMs, 10 * 60_000) });
   return summarizeStatus(parseStatusXml(result.stdout).map((it) => ({ ...it, path: relTo(wc, it.path, ctx.cwd) })));
-}
-
-/** svn 输出的路径（绝对，或在 cwd 之下时相对 cwd）转成相对工作副本根、正斜杠。 */
-export function relTo(wc: string, p: string, cwd?: string): string {
-  const resolved = Boolean(cwd) && !path.isAbsolute(p);
-  const norm = (resolved ? path.resolve(cwd!, p) : p).replace(/\\/g, "/");
-  // 相对路径 resolve 后带盘符（win32），根目录也同样 resolve 才能比较
-  const root = (resolved ? path.resolve(wc) : wc).replace(/\\/g, "/").replace(/\/+$/, "");
-  if (norm === root) return ".";
-  if (norm.startsWith(`${root}/`)) return norm.slice(root.length + 1);
-  return norm;
 }
 
 /** svn 报的工作副本阻碍类错误（未纳管文件挡路、树冲突），切换遇到时把槽位标为 blocked。 */

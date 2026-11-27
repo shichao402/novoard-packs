@@ -1,10 +1,20 @@
+import path from "node:path";
 import { isCliEntry, main } from "../../../shared/cli";
 import { runCommand } from "../../../shared/exec";
 import type { ToolRunContext, ToolRunResult } from "../../../shared/types";
 import { validateToolParams } from "../../../shared/validate";
 import { isGitTool, runGitTool } from "./git";
 import { manifest } from "./manifest";
-import { cleanupAfterInterrupt, SVN_GRACEFUL_MS, svnCheckAndUpdate, svnRevertTree } from "../../../shared/svn-update";
+import { discardSet, loadSvnRules } from "../../../shared/svn-rules";
+import {
+  cleanupAfterInterrupt,
+  type ConflictPolicy,
+  resolveBackupRoot,
+  SVN_GRACEFUL_MS,
+  svnCheckAndUpdate,
+  type SvnRulesInput,
+  svnRevertTree,
+} from "../../../shared/svn-update";
 
 export { manifest };
 
@@ -73,20 +83,41 @@ async function runSvnUpdate(params: Record<string, unknown>, ctx: ToolRunContext
   if (strategy === "disabled") {
     return { detail: "strategy=disabled，跳过", code: 0, skipped: true };
   }
+  const onConflict = (params.onConflict as ConflictPolicy | undefined) ?? "fail";
+  const backupDir = typeof params.backupDir === "string" && params.backupDir ? params.backupDir : undefined;
+  let rules: SvnRulesInput | undefined;
+  if (onConflict === "rules") {
+    const file = typeof params.rulesFile === "string" ? params.rulesFile.trim() : "";
+    if (!file) {
+      throw new Error("onConflict=rules 需要填 rulesFile（svn-rules.toml 的绝对路径）");
+    }
+    const enable = Array.isArray(params.rulesEnable) ? params.rulesEnable.map(String) : [];
+    const loaded = loadSvnRules(path.isAbsolute(file) ? file : path.resolve(ctx.cwd, file));
+    discardSet(loaded, enable); // 提前校验 enable 名
+    const now = new Date();
+    rules = {
+      rules: loaded,
+      enable,
+      archiveRoot: path.join(resolveBackupRoot(ctx.cwd, backupDir), ctx.localDate ?? now.toISOString().slice(0, 10), "rules"),
+      now,
+    };
+  }
   const result = await svnCheckAndUpdate({
     workingCopy: ctx.cwd,
     timeoutMs: ctx.timeoutMs,
     logFile: ctx.logFile,
     abortSignal: ctx.abortSignal,
     skipUpdate: false,
-    onConflict: (params.onConflict as "fail" | "postpone" | "revert") ?? "fail",
+    onConflict,
+    rules,
     backupOnRevert: params.backupOnRevert !== false,
-    backupDir: typeof params.backupDir === "string" ? params.backupDir : undefined,
+    backupDir,
     localDate: ctx.localDate,
     releaseOccupants: params.releaseOccupants !== false,
     onProgress: ctx.onProgress,
   });
-  return { detail: result.detail, code: result.code, skipped: result.skipped };
+  const detail = result.rulesArchiveDir ? `${result.detail}\n规则存档: ${result.rulesArchiveDir}` : result.detail;
+  return { detail, code: result.code, skipped: result.skipped };
 }
 
 async function runSvnArgs(

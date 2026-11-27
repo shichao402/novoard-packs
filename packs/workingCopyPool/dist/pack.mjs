@@ -1,6 +1,6 @@
 // packs/workingCopyPool/src/index.ts
 import { existsSync as existsSync11 } from "node:fs";
-import path15 from "node:path";
+import path16 from "node:path";
 
 // shared/cli.ts
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
@@ -1278,12 +1278,12 @@ function formatSpecToml(spec) {
 var ConfigError = class extends UsageError {
 };
 var CONFIG_FILE = "pool.toml";
-var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "projects", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
+var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "projects", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "svnRules"]);
 var BRANCH_KEYS = /* @__PURE__ */ new Set(["pattern", "listFrom", "recentDays"]);
 var SPARSE_KEYS = /* @__PURE__ */ new Set(["exclude", "root", "depth"]);
 var STORAGE_KEYS = /* @__PURE__ */ new Set(["roots", "minFreeGiB"]);
 var ROOT_KEYS = /* @__PURE__ */ new Set(["path", "minFreeGiB"]);
-var HOOK_KEYS = /* @__PURE__ */ new Set(["beforeUpdate", "retryBlocked"]);
+var SVN_RULES_KEYS = /* @__PURE__ */ new Set(["file", "enable"]);
 var TTL_RE = /^(\d+)(m|h|d|w)$/;
 function isTtl(value) {
   return value === "forever" || TTL_RE.test(value) && Number(value.match(TTL_RE)[1]) > 0;
@@ -1332,6 +1332,9 @@ function parseConfig(text) {
   };
   if (raw.resident !== void 0) {
     fail("", "resident", "\u5DF2\u79FB\u9664\uFF1A\u6C60\u91CC\u4E0D\u518D\u6709\u5E38\u9A7B\u5206\u652F\uFF0C\u9700\u8981\u7684\u5206\u652F\uFF08\u5305\u62EC trunk\uFF09\u90FD\u5199\u8FDB projects");
+  }
+  if (raw.hooks !== void 0) {
+    fail("hooks", void 0, "\u5DF2\u79FB\u9664\uFF1A\u6539\u7528 [svnRules]\uFF08file = \u9879\u76EE svn-rules.toml \u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF0Cenable = \u5F00\u542F\u7684\u53EF\u9009\u4E22\u5F03\u7C7B\u522B\uFF09");
   }
   for (const key2 of Object.keys(raw)) {
     if (!TOP_KEYS.has(key2)) fail("", key2, "\u672A\u77E5\u5B57\u6BB5");
@@ -1389,13 +1392,17 @@ function parseConfig(text) {
   for (const [name, value] of Object.entries(a)) {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
-  const h = table("hooks", HOOK_KEYS);
-  const beforeUpdate = h.beforeUpdate === void 0 ? void 0 : strList("hooks", "beforeUpdate", h.beforeUpdate);
-  if (beforeUpdate && (beforeUpdate.length === 0 || beforeUpdate.length > 64 || beforeUpdate.some((v) => /[\u0000-\u001f]/.test(v)))) {
-    fail("hooks", "beforeUpdate", "\u5E94\u4E3A\u975E\u7A7A\u547D\u4EE4 argv \u6570\u7EC4\uFF08\u6700\u591A 64 \u9879\uFF0C\u4E0D\u542B\u63A7\u5236\u5B57\u7B26\uFF09\uFF1B\u4E0D\u4F1A\u7ECF\u8FC7 shell");
+  let svnRules;
+  if (raw.svnRules !== void 0) {
+    const r = table("svnRules", SVN_RULES_KEYS);
+    const file = str("svnRules", "file", r.file);
+    if (!path2.isAbsolute(file) || /[\u0000-\u001f]/.test(file)) fail("svnRules", "file", `\u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${file}`);
+    const enable = strList("svnRules", "enable", r.enable);
+    for (const name of enable) {
+      if (!/^[A-Za-z][\w-]*$/.test(name)) fail("svnRules", "enable", `\u7C7B\u522B\u540D\u4E0D\u5408\u6CD5\uFF1A${name}`);
+    }
+    svnRules = { file: path2.normalize(file), enable: [...new Set(enable)] };
   }
-  if (h.retryBlocked !== void 0 && typeof h.retryBlocked !== "boolean") fail("hooks", "retryBlocked", "\u5E94\u4E3A\u5E03\u5C14\u503C");
-  if (h.retryBlocked === true && !beforeUpdate) fail("hooks", "retryBlocked", "\u9700\u540C\u65F6\u914D\u7F6E beforeUpdate\uFF0C\u9ED8\u8BA4\u4E0D\u91CD\u8BD5\u963B\u585E\u69FD\u4F4D");
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
   for (const name of projects) {
@@ -1412,7 +1419,7 @@ function parseConfig(text) {
     sparse,
     patchRetentionDays,
     storage,
-    ...raw.hooks !== void 0 ? { hooks: { beforeUpdate, retryBlocked: h.retryBlocked === true } } : {}
+    ...svnRules ? { svnRules } : {}
   };
 }
 function storageKey(p) {
@@ -1683,8 +1690,8 @@ var manifest = {
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync9, lstatSync as lstatSync3, mkdirSync as mkdirSync7, readdirSync, realpathSync as realpathSync3, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
-import path13 from "node:path";
+import { existsSync as existsSync9, lstatSync as lstatSync3, mkdirSync as mkdirSync9, readdirSync, realpathSync as realpathSync3, rmSync as rmSync4, statSync as statSync5 } from "node:fs";
+import path14 from "node:path";
 
 // shared/occupants.ts
 import { closeSync, existsSync as existsSync2, mkdtempSync, openSync, rmSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
@@ -2302,13 +2309,186 @@ function tailLines(text, count = 8) {
   return text.trim().split(/\r?\n/).filter(Boolean).slice(-count).join("\n");
 }
 
-// shared/svn-update.ts
-import { cpSync, existsSync as existsSync4, mkdirSync as mkdirSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import path7 from "node:path";
+// shared/svn-resolve.ts
+import { cpSync, existsSync as existsSync5, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync2, readFileSync as readFileSync3, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3, appendFileSync as appendFileSync2 } from "node:fs";
+import os3 from "node:os";
+import path8 from "node:path";
+
+// shared/svn-archive.ts
+import { existsSync as existsSync3, mkdirSync as mkdirSync4 } from "node:fs";
+import path6 from "node:path";
+function archiveStamp(now) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+function createArchiveDir(root, now) {
+  const base = path6.join(root, archiveStamp(now));
+  let dir = base;
+  for (let i = 2; existsSync3(dir); i++) dir = `${base}_${i}`;
+  mkdirSync4(dir, { recursive: true });
+  return dir;
+}
+function toRelativePatch(diff, wc) {
+  const variants = [wc, wc.replace(/\\/g, "/")].map((p) => p.replace(/[\\/]+$/, ""));
+  let out = diff;
+  for (const v of new Set(variants)) {
+    out = out.split(`${v}/`).join("").split(`${v}\\`).join("");
+  }
+  return out;
+}
+
+// shared/svn-rules.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+var RULE_KINDS = ["local-equals-incoming", "yaml-keys-only", "local-only-missing"];
+var SvnRulesError = class extends Error {
+};
+var TOP_KEYS2 = /* @__PURE__ */ new Set(["version", "categories", "discard", "rule"]);
+var DISCARD_KEYS = /* @__PURE__ */ new Set(["always", "optional"]);
+var RULE_KEYS = /* @__PURE__ */ new Set(["id", "when", "paths", "keys"]);
+function loadSvnRules(file) {
+  let text;
+  try {
+    text = readFileSync2(file, "utf8");
+  } catch (error) {
+    throw new SvnRulesError(`\u8BFB\u4E0D\u5230 SVN \u89C4\u5219\u6587\u4EF6 ${file}\uFF1A${error.message}`);
+  }
+  return parseSvnRules(text, file);
+}
+function parseSvnRules(text, file = "svn-rules.toml") {
+  let raw;
+  try {
+    raw = parse(text);
+  } catch (error) {
+    const detail = error instanceof TomlError ? error.message.split("\n")[0] : String(error);
+    throw new SvnRulesError(`${file}\uFF1ATOML \u8BED\u6CD5\u9519\u8BEF\uFF1A${detail}`);
+  }
+  const fail = (message) => {
+    throw new SvnRulesError(`${file}\uFF1A${message}`);
+  };
+  for (const key2 of Object.keys(raw)) if (!TOP_KEYS2.has(key2)) fail(`\u672A\u77E5\u5B57\u6BB5 ${key2}`);
+  if (raw.version !== 1) fail("version \u5FC5\u987B\u4E3A 1");
+  const strList = (where, value) => {
+    if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) fail(`${where} \u5FC5\u987B\u662F\u5B57\u7B26\u4E32\u6570\u7EC4`);
+    return value;
+  };
+  const table = (where, value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) fail(`${where} \u5FC5\u987B\u662F\u8868`);
+    return value;
+  };
+  const categories = {};
+  const owner = /* @__PURE__ */ new Map();
+  const cats = table("[categories]", raw.categories ?? {});
+  for (const [name, value] of Object.entries(cats)) {
+    if (!/^[A-Za-z][\w-]*$/.test(name)) fail(`\u7C7B\u522B\u540D ${name} \u53EA\u80FD\u7528\u5B57\u6BCD\u3001\u6570\u5B57\u3001- \u548C _\uFF0C\u4E14\u4EE5\u5B57\u6BCD\u5F00\u5934`);
+    const prefixes = [];
+    for (const item of strList(`categories.${name}`, value)) {
+      const rel = normalizeRulePath(item);
+      if (!rel) fail(`categories.${name} \u542B\u975E\u6CD5\u8DEF\u5F84 ${JSON.stringify(item)}`);
+      const key2 = foldCase(rel);
+      const prev = owner.get(key2);
+      if (prev) fail(`\u8DEF\u5F84 ${rel} \u540C\u65F6\u51FA\u73B0\u5728\u7C7B\u522B ${prev} \u548C ${name}`);
+      owner.set(key2, name);
+      prefixes.push(rel);
+    }
+    categories[name] = prefixes;
+  }
+  const discard = table("[discard]", raw.discard ?? {});
+  for (const key2 of Object.keys(discard)) if (!DISCARD_KEYS.has(key2)) fail(`[discard] \u672A\u77E5\u5B57\u6BB5 ${key2}`);
+  const always = strList("discard.always", discard.always ?? []);
+  const optional = strList("discard.optional", discard.optional ?? []);
+  for (const name of [...always, ...optional]) if (!(name in categories)) fail(`[discard] \u5F15\u7528\u4E86\u672A\u5B9A\u4E49\u7684\u7C7B\u522B ${name}`);
+  for (const name of always) if (optional.includes(name)) fail(`\u7C7B\u522B ${name} \u4E0D\u80FD\u540C\u65F6\u5728 always \u548C optional`);
+  const rules = [];
+  const ruleList = raw.rule ?? [];
+  if (!Array.isArray(ruleList)) fail("rule \u5FC5\u987B\u5199\u6210 [[rule]] \u6570\u7EC4");
+  ruleList.forEach((value, index) => {
+    const r = table(`rule[${index}]`, value);
+    for (const key2 of Object.keys(r)) if (!RULE_KEYS.has(key2)) fail(`rule[${index}] \u672A\u77E5\u5B57\u6BB5 ${key2}`);
+    if (typeof r.id !== "string" || !/^[A-Za-z][\w-]*$/.test(r.id)) fail(`rule[${index}].id \u5FC5\u987B\u662F\u5B57\u6BCD\u5F00\u5934\u7684\u6807\u8BC6`);
+    const id = r.id;
+    if (rules.some((x) => x.id === id)) fail(`rule id ${id} \u91CD\u590D`);
+    if (!RULE_KINDS.includes(r.when)) fail(`rule ${id} \u7684 when \u53EA\u80FD\u662F ${RULE_KINDS.join("\u3001")}`);
+    const when = r.when;
+    const paths = strList(`rule ${id} \u7684 paths`, r.paths ?? []);
+    const keys = strList(`rule ${id} \u7684 keys`, r.keys ?? []);
+    if (when === "yaml-keys-only" && keys.length === 0) fail(`rule ${id} \u662F yaml-keys-only\uFF0C\u5FC5\u987B\u7ED9 keys`);
+    if (when !== "yaml-keys-only" && keys.length > 0) fail(`rule ${id} \u53EA\u6709 yaml-keys-only \u624D\u80FD\u5199 keys`);
+    for (const k of keys) if (!/^[A-Za-z_][\w-]*$/.test(k)) fail(`rule ${id} \u7684 key ${k} \u4E0D\u662F\u5408\u6CD5\u7684 YAML \u952E`);
+    const matchers = paths.map((p) => {
+      const norm = p.replace(/\\/g, "/");
+      if (!norm || norm.startsWith("/") || norm.split("/").includes("..")) fail(`rule ${id} \u7684 paths \u542B\u975E\u6CD5\u6A21\u5F0F ${p}`);
+      return globToRegExp(norm);
+    });
+    rules.push({ id, when, paths, keys, matchers });
+  });
+  return { file, categories, always, optional, rules };
+}
+function normalizeRulePath(item) {
+  const rel = item.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!rel || rel.includes(":")) return void 0;
+  if (rel.split("/").some((part) => part === "" || part === "." || part === "..")) return void 0;
+  return rel;
+}
+function discardSet(rules, enable) {
+  for (const name of enable) {
+    if (!rules.optional.includes(name)) {
+      const hint = rules.always.includes(name) ? "\uFF08\u5B83\u5DF2\u603B\u662F\u4E22\u5F03\uFF0C\u4E0D\u7528\u5F00\u542F\uFF09" : `\uFF1B\u53EF\u9009\uFF1A${rules.optional.join("\u3001") || "\u65E0"}`;
+      throw new SvnRulesError(`${rules.file}\uFF1A\u7C7B\u522B ${name} \u4E0D\u80FD\u5F00\u542F${hint}`);
+    }
+  }
+  return /* @__PURE__ */ new Set([...rules.always, ...enable]);
+}
+function categoryOf(rules, rel) {
+  const target = foldCase(rel);
+  let best;
+  for (const [name, prefixes] of Object.entries(rules.categories)) {
+    for (const prefix of prefixes) {
+      const p = foldCase(prefix);
+      if ((target === p || target.startsWith(`${p}/`)) && (!best || prefix.length > best.prefix.length)) best = { name, prefix };
+    }
+  }
+  return best;
+}
+function ruleMatchesPath(rule, rel) {
+  if (rule.matchers.length === 0) return true;
+  const base = rel.slice(rel.lastIndexOf("/") + 1);
+  return rule.paths.some((p, i) => rule.matchers[i].test(p.replace(/\\/g, "/").includes("/") ? rel : base));
+}
+function globToRegExp(glob) {
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*" && glob[i + 1] === "*") {
+      out += ".*";
+      i++;
+      if (glob[i + 1] === "/") i++;
+    } else if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${out}$`, process.platform === "win32" ? "i" : "");
+}
+function sameExceptTopLevelKeys(a, b, keys) {
+  const text = (v) => {
+    const s = typeof v === "string" ? v : v.toString("utf8");
+    return s.includes("\0") ? void 0 : s;
+  };
+  const ta = text(a);
+  const tb = text(b);
+  if (ta === void 0 || tb === void 0) return false;
+  const drop = new RegExp(`^(?:${keys.map((k) => k.replace(/[-]/g, "\\-")).join("|")}):`);
+  const lines = (s) => s.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").replace(/\n+$/, "").split("\n").filter((line) => !drop.test(line));
+  const la = lines(ta);
+  const lb = lines(tb);
+  return la.length === lb.length && la.every((line, i) => line === lb[i]);
+}
+function foldCase(p) {
+  return process.platform === "win32" ? p.toLowerCase() : p;
+}
 
 // shared/svn-status.ts
-import { existsSync as existsSync3 } from "node:fs";
-import path6 from "node:path";
+import { existsSync as existsSync4 } from "node:fs";
+import path7 from "node:path";
 var LOCAL_WRITE_ITEMS = /* @__PURE__ */ new Set([
   "modified",
   "added",
@@ -2372,11 +2552,44 @@ function attr(source, name) {
   }
   return new RegExp(`(?:^|\\s)${name}="([^"]*)"`, "i").exec(source)?.[1];
 }
+function parseStatusItems(xml) {
+  const out = [];
+  const re = /<entry\b([^>]*)>([\s\S]*?)<\/entry>/g;
+  let match;
+  while (match = re.exec(xml)) {
+    const p = /\bpath="([^"]*)"/.exec(match[1])?.[1];
+    const wc = /<wc-status\b([^>]*)>([\s\S]*?)<\/wc-status>|<wc-status\b([^>]*)\/>/.exec(match[2]);
+    if (p === void 0 || !wc) continue;
+    const attrs = wc[1] ?? wc[3] ?? "";
+    const body = wc[2] ?? "";
+    const get = (name) => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
+    out.push({
+      path: decodeXml(p).replace(/\\/g, "/"),
+      item: get("item") ?? "normal",
+      props: get("props") ?? "none",
+      treeConflicted: get("tree-conflicted") === "true",
+      wcLocked: get("wc-locked") === "true",
+      switched: get("switched") === "true",
+      copied: get("copied") === "true",
+      locked: /<lock>/.test(body)
+    });
+  }
+  return out;
+}
+function relativeTo(wc, p, cwd) {
+  const resolved = Boolean(cwd) && !path7.isAbsolute(p);
+  const norm = (resolved ? path7.resolve(cwd, p) : p).replace(/\\/g, "/");
+  const root = (resolved ? path7.resolve(wc) : wc).replace(/\\/g, "/").replace(/\/+$/, "");
+  const fold2 = (s) => process.platform === "win32" ? s.toLowerCase() : s;
+  if (fold2(norm) === fold2(root)) return ".";
+  if (fold2(norm).startsWith(`${fold2(root)}/`)) return norm.slice(root.length + 1);
+  return norm;
+}
 function decodeXml(value) {
   return value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 function relativeFromStatusPath(entryPath) {
-  return entryPath.replace(/\//g, path6.sep);
+  return entryPath.replace(/\//g, path7.sep);
 }
 function revertWriteRelatives(entries) {
   const found = /* @__PURE__ */ new Set();
@@ -2413,29 +2626,29 @@ function prioritizeLockTargets(rels) {
   return [...lockProne, ...rest].slice(0, MAX_LOCK_PROBE_FILES);
 }
 function isLockProne(rel) {
-  return LOCK_PRONE_EXT.has(path6.extname(rel).toLowerCase());
+  return LOCK_PRONE_EXT.has(path7.extname(rel).toLowerCase());
 }
 function svnMetadataPaths(workingCopy) {
   return [
-    path6.join(workingCopy, ".svn", "wc.db"),
-    path6.join(workingCopy, ".svn", "lock"),
-    path6.join(workingCopy, "Temp", "UnityLockfile"),
-    path6.join(workingCopy, "Project", "Temp", "UnityLockfile")
+    path7.join(workingCopy, ".svn", "wc.db"),
+    path7.join(workingCopy, ".svn", "lock"),
+    path7.join(workingCopy, "Temp", "UnityLockfile"),
+    path7.join(workingCopy, "Project", "Temp", "UnityLockfile")
   ];
 }
 function resolveWriteTargets(workingCopy, relatives) {
   const abs2 = /* @__PURE__ */ new Set();
   for (const rel of prioritizeLockTargets(relatives)) {
-    const file = path6.resolve(workingCopy, rel);
+    const file = path7.resolve(workingCopy, rel);
     abs2.add(file);
-    if (!existsSync3(file)) {
-      abs2.add(path6.dirname(file));
+    if (!existsSync4(file)) {
+      abs2.add(path7.dirname(file));
     }
   }
   for (const extra of svnMetadataPaths(workingCopy)) {
     abs2.add(extra);
   }
-  abs2.add(path6.resolve(workingCopy));
+  abs2.add(path7.resolve(workingCopy));
   return [...abs2];
 }
 function isSvnLockError(text) {
@@ -2448,8 +2661,8 @@ function isSvnLockError(text) {
 function conflictedRelativesFromUpdateOutput(stdout) {
   const found = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^(C\s{2,}|\s+C\s{2,})(.+)$/.exec(line);
-    if (match) {
+    const match = /^([ADUCGERB ]{4}) (\S.*)$/.exec(line);
+    if (match && match[1].includes("C")) {
       found.push(match[2].trim());
     }
   }
@@ -2502,20 +2715,552 @@ function pathsFromSvnError(text) {
   return [...found];
 }
 
+// shared/svn-resolve.ts
+var RulesBlockedError = class extends Error {
+  constructor(outcome) {
+    super(describeBlocked(outcome));
+    this.outcome = outcome;
+  }
+};
+function describeBlocked(outcome) {
+  const n = outcome.blocked.length;
+  const list = outcome.blocked.slice(0, 8).map((e) => `${e.path}\uFF08${e.reason ?? e.what}\uFF09`).join("\uFF1B");
+  const more = n > 8 ? ` \u7B49 ${n} \u9879` : "";
+  return `\u89C4\u5219\u5904\u7406\u540E\u4ECD\u6709 ${n} \u9879\u9700\u8981\u4EBA\u5DE5\u5904\u7406\uFF1A${list}${more}${outcome.archiveDir ? `\uFF1B\u5DF2\u5904\u7406\u90E8\u5206\u5B58\u6863 ${outcome.archiveDir}` : ""}`;
+}
+function summarizeRules(outcome) {
+  const count = (action) => outcome.entries.filter((e) => e.action === action).length;
+  const parts = [
+    count("theirs") ? `\u53D6\u8FDC\u7AEF ${count("theirs")}` : "",
+    count("revert") ? `\u8FD8\u539F ${count("revert")}` : "",
+    count("switch-back") ? `\u5207\u56DE ${count("switch-back")}` : ""
+  ].filter(Boolean);
+  if (parts.length === 0) return "";
+  return `\u89C4\u5219\u5904\u7406\uFF1A${parts.join("\u3001")}${outcome.archiveDir ? `\uFF08\u5B58\u6863 ${outcome.archiveDir}\uFF09` : ""}`;
+}
+var DIRTY = /* @__PURE__ */ new Set(["modified", "added", "deleted", "replaced", "missing"]);
+var ACTION_LABEL = { add: "\u65B0\u589E", delete: "\u5220\u9664", edit: "\u4FEE\u6539", replace: "\u66FF\u6362" };
+var REASON_LABEL = {
+  unversioned: "\u6709\u672A\u7EB3\u7BA1\u6587\u4EF6",
+  edit: "\u5DF2\u4FEE\u6539",
+  delete: "\u5DF2\u5220\u9664",
+  missing: "\u7F3A\u5931",
+  obstructed: "\u88AB\u963B\u788D",
+  added: "\u5DF2\u65B0\u589E",
+  replaced: "\u5DF2\u66FF\u6362",
+  "moved-away": "\u5DF2\u79FB\u8D70",
+  "moved-here": "\u5DF2\u79FB\u5165"
+};
+var MAX_ROUNDS = 3;
+async function applySvnRules(o) {
+  const discard = discardSet(o.rules, o.enable);
+  const outcome = { entries: [], blocked: [], archiveDir: o.archiveDir, notes: [] };
+  const tmp = mkdtempSync2(path8.join(os3.tmpdir(), "novoard-svn-rules-"));
+  let force = [...new Set(o.forceArchive ?? [])];
+  let rootUrl;
+  const ctx = {
+    o,
+    discard,
+    tmp,
+    abs: (rel) => rel === "." || rel === "" ? o.wc : path8.join(o.wc, ...rel.split("/")),
+    rel: (p) => relativeTo(o.wc, p, o.cwd),
+    rootUrl: async () => {
+      if (rootUrl) return rootUrl;
+      const info = await o.run(["info", "--xml", peg(o.wc)]);
+      rootUrl = decodeXml(/<url>([\s\S]*?)<\/url>/.exec(info.stdout)?.[1] ?? "").replace(/\/+$/, "");
+      if (!rootUrl) throw new Error(`\u8BFB\u4E0D\u5230 ${o.wc} \u7684 URL`);
+      return rootUrl;
+    },
+    archiveDir: () => {
+      outcome.archiveDir ??= createArchiveDir(o.archiveRoot, o.now);
+      return outcome.archiveDir;
+    },
+    currentArchiveDir: () => outcome.archiveDir
+  };
+  try {
+    for (let round = 1; ; round++) {
+      o.onStage?.(`${o.phase}\uFF1A\u6309\u89C4\u5219\u68C0\u67E5\u5DE5\u4F5C\u526F\u672C`);
+      let items = await statusItems(ctx, o.wc);
+      if (items.some((it) => it.item.wcLocked)) {
+        if (!o.cleanupLocks) {
+          outcome.blocked = [{ path: ".", what: "\u5DE5\u4F5C\u526F\u672C\u9501", action: "blocked", reason: "\u5DE5\u4F5C\u526F\u672C\u88AB\u9501\u5B9A\uFF08\u4E2D\u65AD\u6B8B\u7559\uFF09\uFF0C\u672A\u5141\u8BB8 cleanup" }];
+          break;
+        }
+        await o.run(["cleanup", peg(o.wc)]);
+        outcome.notes.push("\u5DF2 svn cleanup \u89E3\u9664\u5DE5\u4F5C\u526F\u672C\u9501");
+        items = await statusItems(ctx, o.wc);
+      }
+      const plan = await planRound(ctx, items);
+      for (const note of plan.notes) if (!outcome.notes.includes(note)) outcome.notes.push(note);
+      const acting = plan.victims.length + plan.reverts.length + plan.switches.length;
+      if (acting === 0 || round > MAX_ROUNDS) {
+        if (force.length > 0) await archiveRound(ctx, items, emptyPlan(), force);
+        outcome.blocked = acting === 0 ? plan.blocked : [...plan.blocked, ...unconverged(plan)];
+        break;
+      }
+      await archiveRound(ctx, items, plan, force);
+      force = [];
+      const removed = await executePlan(ctx, plan, items);
+      const entries = [...plan.victims.map((v) => v.entry), ...plan.reverts.flatMap((r) => r.entries), ...plan.switches.map((s) => s.entry)];
+      outcome.entries.push(...entries);
+      recordRound(ctx, round, [...entries, ...plan.blocked], removed);
+    }
+  } finally {
+    rmSync2(tmp, { recursive: true, force: true });
+  }
+  if (outcome.blocked.length > 0 && outcome.archiveDir) recordRound(ctx, 0, outcome.blocked, []);
+  return outcome;
+}
+function emptyPlan() {
+  return { victims: [], reverts: [], switches: [], blocked: [], notes: [] };
+}
+function unconverged(plan) {
+  const reason = `${MAX_ROUNDS} \u8F6E\u5904\u7406\u540E\u4ECD\u672A\u6536\u655B`;
+  return [
+    ...plan.victims.map(({ entry }) => ({ ...entry, action: "blocked", reason })),
+    ...plan.reverts.flatMap((r) => r.entries.map((entry) => ({ ...entry, action: "blocked", reason }))),
+    ...plan.switches.map(({ entry }) => ({ ...entry, action: "blocked", reason }))
+  ];
+}
+function peg(p) {
+  return p.includes("@") ? `${p}@` : p;
+}
+async function statusItems(ctx, target) {
+  const result = await ctx.o.run(["status", "--xml", peg(target)], { allowFail: target !== ctx.o.wc });
+  return parseStatusItems(result.stdout).map((item) => ({ rel: ctx.rel(item.path), item }));
+}
+function fold(p) {
+  return process.platform === "win32" ? p.toLowerCase() : p;
+}
+function isUnder(rel, parent) {
+  if (parent === ".") return true;
+  const a = fold(rel);
+  const b = fold(parent);
+  return a === b || a.startsWith(`${b}/`);
+}
+function isDirty(it) {
+  return DIRTY.has(it.item) || it.props === "modified";
+}
+function isVictim(it) {
+  return it.item === "conflicted" || it.props === "conflicted" || it.treeConflicted;
+}
+async function planRound(ctx, items) {
+  const { o, discard } = ctx;
+  const plan = emptyPlan();
+  const victims = await readVictims(ctx, items.filter((x) => isVictim(x.item)));
+  const pairs = /* @__PURE__ */ new Map();
+  const pairOf = (v) => {
+    let p = pairs.get(v.rel);
+    if (!p) {
+      p = contentPair(ctx, v);
+      pairs.set(v.rel, p);
+    }
+    return p;
+  };
+  for (const v of victims) {
+    const cat = categoryOf(o.rules, v.rel);
+    const base = { path: v.rel, what: v.what, ...cat ? { category: cat.name } : {} };
+    if (v.item.item === "obstructed") {
+      plan.blocked.push({ ...base, action: "blocked", reason: `${v.what}\uFF0C\u4E14\u8DEF\u5F84\u88AB\u963B\u788D\uFF08obstructed\uFF09` });
+      continue;
+    }
+    if (cat && discard.has(cat.name)) {
+      plan.victims.push({ victim: v, entry: { ...base, rule: `discard:${cat.name}`, action: "theirs" }, archive: !o.rules.always.includes(cat.name) });
+      continue;
+    }
+    let hit;
+    for (const rule of o.rules.rules) {
+      if (!ruleMatchesPath(rule, v.rel)) continue;
+      if (await rulePasses(ctx, rule, v, items, pairOf)) {
+        hit = rule;
+        break;
+      }
+    }
+    if (hit) {
+      plan.victims.push({ victim: v, entry: { ...base, rule: hit.id, action: "theirs" }, archive: true });
+      continue;
+    }
+    const why = !cat ? "\u4E0D\u5C5E\u4E8E\u53EF\u4E22\u5F03\u7C7B\u522B" : o.rules.optional.includes(cat.name) ? `\u7C7B\u522B ${cat.name} \u672A\u5F00\u542F\u4E22\u5F03` : `\u7C7B\u522B ${cat.name} \u4E0D\u53EF\u4E22\u5F03`;
+    plan.blocked.push({ ...base, action: "blocked", reason: `${v.what}\uFF0C\u672A\u547D\u4E2D\u89C4\u5219\uFF0C${why}` });
+  }
+  for (const x of items) {
+    if (x.item.item === "obstructed" && !isVictim(x.item)) {
+      const cat = categoryOf(o.rules, x.rel);
+      plan.blocked.push({ path: x.rel, what: "\u8DEF\u5F84\u88AB\u963B\u788D", ...cat ? { category: cat.name } : {}, action: "blocked", reason: "\u8DEF\u5F84\u88AB\u963B\u788D\uFF08obstructed\uFF09" });
+    }
+  }
+  const victimRels = victims.map((v) => v.rel);
+  const groups = /* @__PURE__ */ new Map();
+  for (const x of items) {
+    if (!isDirty(x.item) || isVictim(x.item) || x.item.item === "obstructed") continue;
+    if (victimRels.some((v) => isUnder(x.rel, v))) continue;
+    const cat = categoryOf(o.rules, x.rel);
+    if (!cat || !discard.has(cat.name)) continue;
+    const group = groups.get(cat.prefix) ?? { cat: cat.name, entries: [] };
+    group.entries.push({ path: x.rel, what: localWhat(x.item), category: cat.name, rule: `discard:${cat.name}`, action: "revert" });
+    groups.set(cat.prefix, group);
+  }
+  for (const [prefix, group] of groups) {
+    const archive = !o.rules.always.includes(group.cat);
+    if (plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path))) {
+      for (const entry of group.entries) plan.reverts.push({ target: entry.path, entries: [entry], archive });
+    } else {
+      plan.reverts.push({ target: prefix, entries: group.entries, archive });
+    }
+  }
+  for (const x of items) {
+    if (!x.item.switched || x.rel === ".") continue;
+    const cat = categoryOf(o.rules, x.rel);
+    if (cat && discard.has(cat.name)) {
+      plan.switches.push({ rel: x.rel, entry: { path: x.rel, what: "switched \u5230\u5176\u4ED6 URL", category: cat.name, rule: `discard:${cat.name}`, action: "switch-back" } });
+    } else {
+      plan.notes.push(`${x.rel} \u88AB switch \u5230\u5176\u4ED6 URL\uFF0C\u4E0D\u5C5E\u4E8E\u53EF\u4E22\u5F03\u7C7B\u522B\uFF0C\u4FDD\u6301\u4E0D\u52A8`);
+    }
+  }
+  return plan;
+}
+function localWhat(it) {
+  const label = { modified: "\u672C\u5730\u4FEE\u6539", added: "\u672C\u5730\u65B0\u589E", deleted: "\u672C\u5730\u5220\u9664", replaced: "\u672C\u5730\u66FF\u6362", missing: "\u672C\u5730\u7F3A\u5931" };
+  return label[it.item] ?? (it.props === "modified" ? "\u672C\u5730\u5C5E\u6027\u4FEE\u6539" : it.item);
+}
+async function readVictims(ctx, list) {
+  const infos = /* @__PURE__ */ new Map();
+  for (let i = 0; i < list.length; i += 50) {
+    const batch = list.slice(i, i + 50);
+    const result = await ctx.o.run(["info", "--xml", ...batch.map((x) => peg(ctx.abs(x.rel)))], { allowFail: true });
+    for (const [p, info] of parseConflictInfo(result.stdout)) infos.set(fold(ctx.rel(p)), info);
+  }
+  return list.map((x) => {
+    const info = infos.get(fold(x.rel)) ?? {};
+    const text = x.item.item === "conflicted" && !x.item.treeConflicted ? true : Boolean(info.text);
+    const props = x.item.props === "conflicted";
+    const tree = x.item.treeConflicted;
+    return { rel: x.rel, item: x.item, text, props, tree, info, what: describeConflict({ text, props, tree, info }) };
+  });
+}
+function describeConflict(v) {
+  const parts = [];
+  if (v.tree) {
+    const t = v.info.tree;
+    parts.push(
+      t ? `\u6811\u51B2\u7A81\uFF08${t.operation === "switch" ? "\u5207\u6362" : t.operation === "update" ? "\u66F4\u65B0" : t.operation}\u65F6\u8FDC\u7AEF${ACTION_LABEL[t.action] ?? t.action}\uFF0C\u672C\u5730${REASON_LABEL[t.reason] ?? t.reason}\uFF09` : "\u6811\u51B2\u7A81"
+    );
+  }
+  if (v.text) parts.push("\u6587\u672C\u51B2\u7A81");
+  if (v.props) parts.push("\u5C5E\u6027\u51B2\u7A81");
+  return parts.join("+") || "\u51B2\u7A81";
+}
+function parseConflictInfo(xml) {
+  const out = /* @__PURE__ */ new Map();
+  const entryRe = /<entry\b([^>]*)>([\s\S]*?)<\/entry>/g;
+  let m;
+  while (m = entryRe.exec(xml)) {
+    const p = attr2(m[1], "path");
+    if (p === void 0) continue;
+    const body = m[2];
+    const info = {};
+    const conflictRe = /<conflict\b([^>]*)>([\s\S]*?)<\/conflict>/g;
+    let c;
+    while (c = conflictRe.exec(body)) {
+      const type = attr2(c[1], "type");
+      const inner = c[2];
+      const file = (tag) => {
+        const v = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(inner)?.[1];
+        return v === void 0 ? void 0 : decodeXml(v);
+      };
+      if (type === "text") info.text = { mine: file("prev-wc-file"), theirs: file("cur-base-file"), older: file("prev-base-file") };
+      if (type === "property") info.propFile = file("prop-file");
+      info.right ??= rightVersion(inner);
+    }
+    const tree = /<tree-conflict\b([^>]*)>([\s\S]*?)<\/tree-conflict>/.exec(body);
+    if (tree) {
+      info.tree = {
+        action: attr2(tree[1], "action") ?? "",
+        reason: attr2(tree[1], "reason") ?? "",
+        operation: attr2(tree[1], "operation") ?? "",
+        kind: attr2(tree[1], "kind") ?? ""
+      };
+      info.right = rightVersion(tree[2]) ?? info.right;
+    }
+    out.set(decodeXml(p), info);
+  }
+  return out;
+}
+function rightVersion(body) {
+  const re = /<version\b([^>]*?)\/?>/g;
+  let v;
+  while (v = re.exec(body)) {
+    if (attr2(v[1], "side") !== "source-right") continue;
+    return {
+      side: "source-right",
+      kind: attr2(v[1], "kind") ?? "",
+      pathInRepos: decodeXml(attr2(v[1], "path-in-repos") ?? ""),
+      reposUrl: decodeXml(attr2(v[1], "repos-url") ?? ""),
+      revision: Number(attr2(v[1], "revision") ?? -1)
+    };
+  }
+  return void 0;
+}
+function attr2(source, name) {
+  return new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(source)?.[1];
+}
+async function contentPair(ctx, v) {
+  if (v.props) return void 0;
+  const readFile = (file) => {
+    if (!file) return void 0;
+    try {
+      return statSync(file).isFile() ? readFileSync3(file) : void 0;
+    } catch {
+      return void 0;
+    }
+  };
+  if (v.text && !v.tree) {
+    const local = readFile(v.info.text?.mine ?? ctx.abs(v.rel));
+    const incoming = readFile(v.info.text?.theirs);
+    return local && incoming ? { local, incoming } : void 0;
+  }
+  if (v.tree && !v.text) {
+    const right = v.info.right;
+    const local = readFile(ctx.abs(v.rel));
+    if (!local || !right || right.kind !== "file" || right.revision < 0 || !right.reposUrl) return void 0;
+    const url = `${right.reposUrl.replace(/\/+$/, "")}/${right.pathInRepos.split("/").map(encodeURIComponent).join("/")}@${right.revision}`;
+    const out = path8.join(ctx.tmp, `incoming-${Math.random().toString(36).slice(2)}`);
+    const result = await ctx.o.run(["export", "--force", url, out], { allowFail: true });
+    const incoming = result.code === 0 ? readFile(out) : void 0;
+    rmSync2(out, { force: true });
+    return incoming ? { local, incoming } : void 0;
+  }
+  return void 0;
+}
+async function rulePasses(ctx, rule, v, items, pairOf) {
+  if (rule.when === "local-equals-incoming") {
+    const pair = await pairOf(v);
+    return Boolean(pair && pair.local.equals(pair.incoming));
+  }
+  if (rule.when === "yaml-keys-only") {
+    const pair = await pairOf(v);
+    return Boolean(pair && sameExceptTopLevelKeys(pair.local, pair.incoming, rule.keys));
+  }
+  return localOnlyMissing(ctx, v, items);
+}
+function localOnlyMissing(ctx, v, items) {
+  if (!v.tree || v.text || v.props || v.item.props === "modified") return false;
+  const abs2 = ctx.abs(v.rel);
+  const onDisk = existsSync5(abs2);
+  const isFile = onDisk && statSync(abs2).isFile();
+  const it = v.item.item;
+  const selfOk = it === "missing" || it === "deleted" && !onDisk || it === "added" && v.item.copied && !isFile;
+  if (!selfOk) return false;
+  return items.every((x) => {
+    if (x.rel === v.rel || !isUnder(x.rel, v.rel)) return true;
+    return (x.item.item === "missing" || x.item.item === "deleted") && x.item.props !== "modified" && x.item.props !== "conflicted";
+  });
+}
+async function archiveRound(ctx, items, plan, force) {
+  const { o } = ctx;
+  const diffTargets = [];
+  const copies = [];
+  const byRel = new Map(items.map((x) => [fold(x.rel), x.item]));
+  const alwaysCat = (rel) => {
+    const cat = categoryOf(o.rules, rel);
+    return Boolean(cat && o.rules.always.includes(cat.name));
+  };
+  for (const { victim: v, archive } of plan.victims) {
+    if (!archive) continue;
+    const abs2 = ctx.abs(v.rel);
+    diffTargets.push(v.rel);
+    if (v.text) copies.push({ from: v.info.text?.mine ?? abs2, to: v.rel });
+    else if (existsSync5(abs2)) copies.push({ from: abs2, to: v.rel });
+    if (v.props && v.info.propFile) copies.push({ from: v.info.propFile, to: `${v.rel}.prej` });
+  }
+  for (const r of plan.reverts) {
+    if (!r.archive) continue;
+    diffTargets.push(r.target);
+    for (const e of r.entries) {
+      const it = byRel.get(fold(e.path));
+      if (it && (it.item === "modified" || it.item === "added" || it.item === "replaced")) copies.push({ from: ctx.abs(e.path), to: e.path });
+    }
+  }
+  const forced = force.filter((rel) => !alwaysCat(rel));
+  for (const rel of forced) {
+    diffTargets.push(rel);
+    copies.push({ from: ctx.abs(rel), to: rel });
+  }
+  const acting = plan.victims.length + plan.reverts.length + plan.switches.length;
+  if (acting === 0 && forced.length === 0) return;
+  const dir = ctx.archiveDir();
+  writeReadme(ctx, dir);
+  const uniqueTargets = [...new Set(diffTargets)];
+  for (let i = 0; i < uniqueTargets.length; i += 50) {
+    const batch = uniqueTargets.slice(i, i + 50).map((rel) => peg(ctx.abs(rel)));
+    const diff = await o.run(["diff", "--internal-diff", ...batch], { allowFail: true });
+    const text = toRelativePatch(diff.stdout, o.wc);
+    if (text.trim()) appendFileSync2(path8.join(dir, "changes.patch"), text.endsWith("\n") ? text : `${text}
+`, "utf8");
+  }
+  for (const { from, to } of copies) copyIntoArchive(from, path8.join(dir, "files", ...to.split("/")));
+  if (forced.length > 0) {
+    appendFileSync2(path8.join(dir, "versioned.txt"), forced.map((rel) => `${o.phase}	archive	\u5C06\u4E0E\u8FDC\u7AEF\u5408\u5E76\u7684\u672C\u5730\u4FEE\u6539	${rel}	
+`).join(""), "utf8");
+  }
+}
+function copyIntoArchive(from, to) {
+  if (!existsSync5(from) || existsSync5(to)) return;
+  mkdirSync5(path8.dirname(to), { recursive: true });
+  cpSync(from, to, {
+    recursive: true,
+    force: false,
+    errorOnExist: false,
+    filter: (src) => path8.basename(src).toLowerCase() !== ".svn"
+  });
+}
+function writeReadme(ctx, dir) {
+  const file = path8.join(dir, "README.txt");
+  if (existsSync5(file)) return;
+  writeFileSync3(
+    file,
+    [
+      "SVN \u89C4\u5219\u5904\u7406\u5B58\u6863",
+      `\u5DE5\u4F5C\u526F\u672C\uFF1A${ctx.o.wc}`,
+      `\u89C4\u5219\u6587\u4EF6\uFF1A${ctx.o.rules.file}`,
+      `\u65F6\u95F4\uFF1A${ctx.o.now.toISOString()}`,
+      "",
+      "changes.patch  \u53D7\u63A7\u6539\u52A8\u7684 svn diff\uFF08\u8DEF\u5F84\u76F8\u5BF9\u5DE5\u4F5C\u526F\u672C\u6839\uFF09\uFF1B\u5728\u540C\u4E00\u5206\u652F\u7684\u5DE5\u4F5C\u526F\u672C\u6839\u6267\u884C svn patch changes.patch \u6062\u590D\u3002",
+      "files/         \u88AB\u5904\u7406\u8DEF\u5F84\u7684\u672C\u5730\u7248\u672C\u539F\u6837\u62F7\u8D1D\uFF1A\u6587\u672C\u51B2\u7A81\u662F .mine\uFF08\u4E8C\u8FDB\u5236\u4E3A\u672C\u5730\u6587\u4EF6\uFF09\uFF0C\u6811\u51B2\u7A81\u662F\u78C1\u76D8\u4E0A\u7684\u5185\u5BB9\uFF0C\u5C5E\u6027\u51B2\u7A81\u53E6\u5B58 .prej\u3002",
+      "versioned.txt  \u5904\u7406\u6E05\u5355\uFF08\u9636\u6BB5\u3001\u52A8\u4F5C\u3001\u73B0\u573A\u3001\u8DEF\u5F84\u3001\u89C4\u5219\uFF09\u3002",
+      "unversioned.txt \u88AB\u5220\u9664\u7684\u51B2\u7A81\u9057\u7559\u6587\u4EF6\uFF08\u5DF2\u62F7\u8FDB files/\uFF09\u3002",
+      "rules.json     \u6BCF\u8F6E\u5904\u7406\u660E\u7EC6\u3002",
+      `\u603B\u662F\u4E22\u5F03\u7684\u7C7B\u522B\uFF08${ctx.o.rules.always.join("\u3001") || "\u65E0"}\uFF09\u662F\u53EF\u518D\u751F\u5185\u5BB9\uFF0C\u53EA\u8BB0\u6E05\u5355\uFF0C\u4E0D\u62F7\u5185\u5BB9\u3002`,
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+}
+async function executePlan(ctx, plan, items) {
+  const { o } = ctx;
+  const removed = [];
+  const unversioned = new Set(items.filter((x) => x.item.item === "unversioned").map((x) => fold(x.rel)));
+  const victims = [...plan.victims].sort((a, b) => b.victim.rel.split("/").length - a.victim.rel.split("/").length);
+  if (victims.length) o.onStage?.(`${o.phase}\uFF1A\u6309\u89C4\u5219\u5904\u7406 ${victims.length} \u4E2A\u51B2\u7A81`);
+  for (const { victim: v, archive } of victims) {
+    const abs2 = ctx.abs(v.rel);
+    const artifacts = [v.info.text?.mine, v.info.text?.theirs, v.info.text?.older, v.info.propFile].filter((f) => Boolean(f));
+    if (v.tree) {
+      await o.run(["resolve", "--accept", "working", peg(abs2)]);
+      await o.run(["revert", "-R", peg(abs2)]);
+      await settleTree(ctx, v.rel, archive, removed);
+    } else {
+      await o.run(["resolve", "--accept", "theirs-full", peg(abs2)]);
+      await o.run(["revert", "--depth", "empty", peg(abs2)]);
+    }
+    for (const file of artifacts) {
+      const meta = `${file}.meta`;
+      const rel = ctx.rel(meta);
+      if (!unversioned.has(fold(rel)) || !existsSync5(meta)) continue;
+      if (archive) copyIntoArchive(meta, path8.join(ctx.archiveDir(), "files", ...rel.split("/")));
+      rmSync2(meta, { force: true });
+      removed.push(rel);
+    }
+  }
+  if (plan.reverts.length) {
+    const count = plan.reverts.reduce((n, r) => n + r.entries.length, 0);
+    o.onStage?.(`${o.phase}\uFF1A\u8FD8\u539F\u53EF\u4E22\u5F03\u7C7B\u522B\u7684 ${count} \u5904\u672C\u5730\u6539\u52A8`);
+    const targets = plan.reverts.map((r) => r.target);
+    for (let i = 0; i < targets.length; i += 50) {
+      await o.run(["revert", "-R", ...targets.slice(i, i + 50).map((rel) => peg(ctx.abs(rel)))]);
+    }
+  }
+  if (plan.switches.length) {
+    o.onStage?.(`${o.phase}\uFF1A\u5207\u56DE ${plan.switches.length} \u4E2A switched \u8DEF\u5F84`);
+    const root = await ctx.rootUrl();
+    for (const { rel } of plan.switches) {
+      const url = `${root}/${rel.split("/").map(encodeURIComponent).join("/")}`;
+      await o.run(["switch", "--ignore-ancestry", "--accept", "postpone", url, peg(ctx.abs(rel))]);
+    }
+  }
+  return removed;
+}
+async function settleTree(ctx, rel, archive, removed) {
+  const abs2 = ctx.abs(rel);
+  for (let i = 0; i < 2; i++) {
+    if (!existsSync5(abs2)) return;
+    const items = await statusItems(ctx, abs2);
+    const self = items.find((x) => fold(x.rel) === fold(rel));
+    if (self?.item.item === "unversioned") {
+      if (archive) copyIntoArchive(abs2, path8.join(ctx.archiveDir(), "files", ...rel.split("/")));
+      rmSync2(abs2, { recursive: true, force: true });
+      removed.push(rel);
+      return;
+    }
+    if (!items.some((x) => isDirty(x.item) || isVictim(x.item))) return;
+    await ctx.o.run(["revert", "-R", peg(abs2)]);
+  }
+}
+function recordRound(ctx, round, entries, removed) {
+  const acted = removed.length > 0 || entries.some((e) => e.action !== "blocked");
+  const dir = acted ? ctx.archiveDir() : ctx.currentArchiveDir();
+  if (!dir) return;
+  const file = path8.join(dir, "rules.json");
+  let runs = [];
+  try {
+    runs = JSON.parse(readFileSync3(file, "utf8"));
+    if (!Array.isArray(runs)) runs = [];
+  } catch {
+    runs = [];
+  }
+  runs.push({ phase: ctx.o.phase, round: round || "final", time: (/* @__PURE__ */ new Date()).toISOString(), entries, removed });
+  writeFileSync3(file, `${JSON.stringify(runs, null, 2)}
+`, "utf8");
+  const lines = entries.filter((e) => round > 0 ? e.action !== "blocked" : true).map((e) => `${ctx.o.phase}	${e.action}	${e.what}	${e.path}	${e.rule ?? e.reason ?? ""}
+`).join("");
+  if (lines) appendFileSync2(path8.join(dir, "versioned.txt"), lines, "utf8");
+  if (removed.length) appendFileSync2(path8.join(dir, "unversioned.txt"), removed.map((r) => `${r}
+`).join(""), "utf8");
+}
+
 // shared/svn-update.ts
+import { cpSync as cpSync2, existsSync as existsSync6, mkdirSync as mkdirSync6, writeFileSync as writeFileSync4 } from "node:fs";
+import path9 from "node:path";
 async function svnCheckAndUpdate(options) {
-  if (!existsSync4(options.workingCopy)) {
+  if (!existsSync6(options.workingCopy)) {
     throw new Error(`\u76EE\u5F55\u4E0D\u5B58\u5728: ${options.workingCopy}`);
   }
-  if (!existsSync4(path7.join(options.workingCopy, ".svn"))) {
+  if (!existsSync6(path9.join(options.workingCopy, ".svn"))) {
     throw new Error("\u4E0D\u662F SVN \u5DE5\u4F5C\u526F\u672C\uFF08\u7F3A\u5C11 .svn\uFF09");
   }
   const stage2 = (message) => options.onProgress?.(message, null);
   const policy = options.onConflict ?? "fail";
   const notes = [];
   const canRelease = options.releaseOccupants === true && process.platform === "win32";
-  if (existsSync4(path7.join(options.workingCopy, ".svn", "lock"))) {
-    if (policy !== "revert") {
+  const rulesInput = options.rules;
+  if (policy === "rules" && !rulesInput) {
+    throw new Error("onConflict=rules \u9700\u8981\u63D0\u4F9B SVN \u89C4\u5219\u6587\u4EF6");
+  }
+  let rulesArchiveDir;
+  const runRules = async (phase, forceArchive = []) => {
+    const outcome = await applySvnRules({
+      wc: options.workingCopy,
+      cwd: options.workingCopy,
+      run: (args, o) => runSvn(options, [...args, "--non-interactive"], `svn ${args[0]}`, o?.allowFail ?? false),
+      rules: rulesInput.rules,
+      enable: rulesInput.enable,
+      archiveRoot: rulesInput.archiveRoot,
+      archiveDir: rulesArchiveDir,
+      now: rulesInput.now ?? /* @__PURE__ */ new Date(),
+      phase,
+      forceArchive,
+      cleanupLocks: true,
+      onStage: stage2
+    });
+    rulesArchiveDir = outcome.archiveDir;
+    for (const note of outcome.notes) if (!notes.includes(note)) notes.push(note);
+    const summary = summarizeRules(outcome);
+    if (summary) notes.push(`${phase}${summary}`);
+    if (outcome.blocked.length > 0) throw new RulesBlockedError(outcome);
+  };
+  const done = (result) => rulesArchiveDir ? { ...result, rulesArchiveDir } : result;
+  if (existsSync6(path9.join(options.workingCopy, ".svn", "lock"))) {
+    if (policy !== "revert" && policy !== "rules") {
       throw new Error("\u5DE5\u4F5C\u526F\u672C\u6709 in-progress \u9501\uFF08.svn/lock\uFF09\uFF0C\u672A\u6267\u884C cleanup");
     }
     if (canRelease) {
@@ -2540,7 +3285,8 @@ async function svnCheckAndUpdate(options) {
   }
   const predicted = predictWriteRelatives(statusXml, incomingXml, {
     skipUpdate: options.skipUpdate,
-    willRevertProblems: policy === "revert" && Boolean(findSvnProblem(status3.stdout))
+    willRevertProblems: policy === "revert" && Boolean(findSvnProblem(status3.stdout)),
+    extraLocal: policy === "rules" ? rulesLocalWrites(options.workingCopy, status3.stdout, rulesInput) : []
   });
   logWriteSet(options.logFile, predicted, incomingXml ? "update" : "local");
   if (canRelease && predicted.rels.length > 0) {
@@ -2554,7 +3300,9 @@ async function svnCheckAndUpdate(options) {
     );
   }
   const problem = findSvnProblem(status3.stdout);
-  if (problem) {
+  if (policy === "rules") {
+    await runRules("\u66F4\u65B0\u524D", mergeTargets(options.workingCopy, incomingXml));
+  } else if (problem) {
     if (policy === "postpone") {
       return {
         skipped: true,
@@ -2577,7 +3325,7 @@ async function svnCheckAndUpdate(options) {
     notes.push("\u5DF2\u6309 onConflict=revert \u6267\u884C cleanup/revert");
   }
   if (options.skipUpdate) {
-    return { skipped: true, detail: notes.join("\uFF1B") || "\u6309\u7B56\u7565\u8DF3\u8FC7 svn update", code: 0 };
+    return done({ skipped: true, detail: notes.join("\uFF1B") || "\u6309\u7B56\u7565\u8DF3\u8FC7 svn update", code: 0 });
   }
   stage2(incomingXml ? `\u5F00\u59CB\u66F4\u65B0\uFF0C\u8FDC\u7AEF\u53D8\u66F4\u7EA6 ${predicted.incoming} \u4E2A\u8DEF\u5F84` : "\u5F00\u59CB\u66F4\u65B0");
   const counter = createUpdateProgress({
@@ -2598,35 +3346,38 @@ async function svnCheckAndUpdate(options) {
   if (update.code === 0) {
     counter.finish();
     const conflicts = [...updateConflicts];
-    if (conflicts.length > 0 && policy === "postpone") {
+    if (conflicts.length > 0 && policy === "rules") {
+      notes.push(`svn update \u4EA7\u751F ${conflicts.length} \u4E2A\u51B2\u7A81\uFF0C\u6309\u89C4\u5219\u5904\u7406`);
+      await runRules("\u66F4\u65B0\u540E");
+    } else if (conflicts.length > 0 && policy === "postpone") {
       return {
         skipped: true,
         detail: `svn update \u4EA7\u751F ${conflicts.length} \u4E2A\u51B2\u7A81\uFF0C\u6309 onConflict=postpone \u4FDD\u7559\u73B0\u573A\u6302\u8D77\uFF0C\u5904\u7406\u5B8C\u4E0B\u8F6E\u81EA\u52A8\u7EE7\u7EED:
   ${conflicts.slice(0, 20).join("\n  ")}`,
         code: 0
       };
-    }
-    if (conflicts.length > 0) {
+    } else if (conflicts.length > 0) {
       throw new Error(`svn update \u4EA7\u751F ${conflicts.length} \u4E2A\u51B2\u7A81:
   ${conflicts.slice(0, 20).join("\n  ")}`);
     }
     notes.push(tail(update.stdout) || "svn update \u5B8C\u6210");
-    return { skipped: false, detail: notes.join("\uFF1B"), code: update.code };
+    return done({ skipped: false, detail: notes.join("\uFF1B"), code: update.code });
   }
   const updateProblem = findSvnProblem(update.stdout + update.stderr) ?? tail(update.stderr) ?? `svn update \u9000\u51FA\u7801 ${update.code}`;
   const lockHit = isSvnLockError(update.stdout + update.stderr);
   if (canRelease && lockHit) {
     const extra = pathsFromSvnError(`${update.stdout}
 ${update.stderr}`).map(
-      (item) => path7.isAbsolute(item) ? path7.relative(options.workingCopy, item) : item
+      (item) => path9.isAbsolute(item) ? path9.relative(options.workingCopy, item) : item
     );
     notes.push("\u66F4\u65B0\u88AB\u6587\u4EF6\u72EC\u5360\u6253\u65AD\uFF0Ccleanup \u5E76\u91CA\u653E\u5360\u7528\u540E\u91CD\u8BD5");
     await runSvn(options, ["cleanup"], "svn cleanup", true);
     await releasePredicted(options, [...predicted.rels, ...extra], "update \u72EC\u5360\u91CD\u8BD5");
-    const retry2 = await runSvn(options, ["update"], "svn update retry", true);
+    const retry2 = await runSvn(options, ["update", "--non-interactive", "--accept", "postpone"], "svn update retry", true);
     if (retry2.code === 0) {
       notes.push("\u91CA\u653E\u5360\u7528\u540E\u5DF2\u91CD\u65B0 update");
-      return { skipped: false, detail: [...notes, tail(retry2.stdout) || "svn update \u5B8C\u6210"].join("\uFF1B"), code: retry2.code };
+      if (policy === "rules") await runRules("\u66F4\u65B0\u540E");
+      return done({ skipped: false, detail: [...notes, tail(retry2.stdout) || "svn update \u5B8C\u6210"].join("\uFF1B"), code: retry2.code });
     }
   }
   if (policy !== "revert") {
@@ -2650,17 +3401,37 @@ ${update.stderr}`).map(
 function predictWriteRelatives(localXml, incomingXml, options) {
   const localEntries = parseSvnStatusXml(localXml);
   const local = revertWriteRelatives(localEntries);
+  const extra = options.extraLocal ?? [];
   if (options.skipUpdate) {
     return {
-      rels: options.willRevertProblems ? local : [],
+      rels: options.willRevertProblems ? local : extra,
       incoming: 0,
       local: local.length
     };
   }
   const incomingEntries = parseSvnStatusXml(incomingXml ?? localXml);
   const incoming = updateWriteRelatives(incomingEntries, false);
-  const rels = options.willRevertProblems ? [.../* @__PURE__ */ new Set([...incoming, ...local])] : incoming;
+  const rels = options.willRevertProblems ? [.../* @__PURE__ */ new Set([...incoming, ...local])] : [.../* @__PURE__ */ new Set([...incoming, ...extra])];
   return { rels, incoming: incoming.length, local: local.length };
+}
+function rulesLocalWrites(wc, localXml, input) {
+  const discard = discardSet(input.rules, input.enable);
+  const out = [];
+  for (const it of parseStatusItems(localXml)) {
+    const rel = relativeTo(wc, it.path, wc);
+    if (rel === ".") continue;
+    const conflicted = it.item === "conflicted" || it.props === "conflicted" || it.treeConflicted;
+    const dirty = conflicted || ["modified", "added", "deleted", "replaced", "missing"].includes(it.item) || it.props === "modified";
+    if (!dirty) continue;
+    const cat = categoryOf(input.rules, rel);
+    if (conflicted || cat && discard.has(cat.name)) out.push(relativeFromStatusPath(rel));
+  }
+  return out;
+}
+function mergeTargets(wc, incomingXml) {
+  if (!incomingXml) return [];
+  const incoming = /* @__PURE__ */ new Set(["modified", "replaced", "deleted"]);
+  return parseSvnStatusXml(incomingXml).filter((e) => (e.wcItem === "modified" || e.wcItem === "replaced") && e.reposItem !== void 0 && incoming.has(e.reposItem)).map((e) => relativeTo(wc, e.path.replace(/\\/g, "/"), wc)).filter((rel) => rel !== ".");
 }
 function logWriteSet(logFile, predicted, kind) {
   const preview = predicted.rels.slice(0, 30).join("\n  ");
@@ -2707,8 +3478,8 @@ async function runSvn(options, args, label, allowFail = false, onStdoutLine) {
     abortSignal: options.abortSignal,
     gracefulMs: SVN_GRACEFUL_MS,
     onStdoutLine,
-    // status --xml 要整份解析（写集预测、冲突判断、备份清单）；update/revert 输出只看尾部
-    fullStdout: args[0] === "status"
+    // status/info/diff/list 的输出要整份解析（写集预测、冲突判断、存档）；update/revert 输出只看尾部
+    fullStdout: ["status", "info", "diff", "list"].includes(args[0])
   }).done;
   if (result.cancelled) {
     const note = await cleanupAfterInterrupt(args, { cwd: options.workingCopy, logFile: options.logFile });
@@ -2731,29 +3502,29 @@ async function backupDirty(options, statusXml) {
   const rels = revertWriteRelatives(parseSvnStatusXml(statusXml)).filter((rel) => !shouldSkipBackup(rel));
   const root = resolveBackupRoot(options.workingCopy, options.backupDir);
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const destRoot = path7.join(root, options.localDate ?? stamp.slice(0, 10), stamp);
-  mkdirSync4(destRoot, { recursive: true });
+  const destRoot = path9.join(root, options.localDate ?? stamp.slice(0, 10), stamp);
+  mkdirSync6(destRoot, { recursive: true });
   const copied = [];
   for (const rel of rels) {
-    const from = path7.join(options.workingCopy, rel);
-    if (!existsSync4(from)) {
+    const from = path9.join(options.workingCopy, rel);
+    if (!existsSync6(from)) {
       continue;
     }
-    const to = path7.join(destRoot, rel);
-    mkdirSync4(path7.dirname(to), { recursive: true });
-    cpSync(from, to, {
+    const to = path9.join(destRoot, rel);
+    mkdirSync6(path9.dirname(to), { recursive: true });
+    cpSync2(from, to, {
       recursive: true,
       force: true,
-      filter: (src) => !shouldSkipBackup(path7.relative(options.workingCopy, src))
+      filter: (src) => !shouldSkipBackup(path9.relative(options.workingCopy, src))
     });
     copied.push(rel);
   }
-  writeFileSync3(path7.join(destRoot, "manifest.txt"), copied.join("\n") || "(\u6CA1\u6709\u53EF\u5907\u4EFD\u7684\u810F\u6587\u4EF6)", "utf8");
+  writeFileSync4(path9.join(destRoot, "manifest.txt"), copied.join("\n") || "(\u6CA1\u6709\u53EF\u5907\u4EFD\u7684\u810F\u6587\u4EF6)", "utf8");
   return destRoot;
 }
 function resolveBackupRoot(workingCopy, backupDir) {
   if (backupDir) {
-    return path7.isAbsolute(backupDir) ? backupDir : path7.resolve(workingCopy, backupDir);
+    return path9.isAbsolute(backupDir) ? backupDir : path9.resolve(workingCopy, backupDir);
   }
   return `${workingCopy.replace(/[\\/]+$/, "")}_backup`;
 }
@@ -2766,7 +3537,7 @@ function conflictedRelatives(statusXml) {
   return rels.length > 0 ? rels.slice(0, 20).join("\n  ") : "(status \u672A\u6807\u51FA\u51B2\u7A81\u6761\u76EE)";
 }
 function findSvnProblem(xml) {
-  if (/item="conflicted"/.test(xml) || />conflicted</.test(xml)) {
+  if (/item="conflicted"/.test(xml) || />conflicted</.test(xml) || /props="conflicted"/.test(xml) || /tree-conflicted="true"/.test(xml)) {
     return "\u5DE5\u4F5C\u526F\u672C\u5B58\u5728\u51B2\u7A81";
   }
   if (/item="obstructed"/.test(xml)) {
@@ -2785,23 +3556,23 @@ function tail(text) {
 }
 
 // packs/workingCopyPool/src/archive.ts
-import { copyFileSync, existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync6, readlinkSync, rmSync as rmSync2, statSync as statSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "node:fs";
-import path10 from "node:path";
+import { copyFileSync, lstatSync, mkdirSync as mkdirSync8, readlinkSync, rmSync as rmSync3, statSync as statSync3, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import path12 from "node:path";
 
 // packs/workingCopyPool/src/state.ts
-import { appendFileSync as appendFileSync2, closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync5, openSync as openSync2, readFileSync as readFileSync2, renameSync, statSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4, writeSync } from "node:fs";
-import path8 from "node:path";
+import { appendFileSync as appendFileSync3, closeSync as closeSync2, existsSync as existsSync7, mkdirSync as mkdirSync7, openSync as openSync2, readFileSync as readFileSync4, renameSync, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync5, writeSync } from "node:fs";
+import path10 from "node:path";
 function poolPaths(root) {
-  const meta = path8.join(root, ".pool");
+  const meta = path10.join(root, ".pool");
   return {
     root,
-    branch: path8.join(root, "branch"),
-    patches: path8.join(root, "patches"),
+    branch: path10.join(root, "branch"),
+    patches: path10.join(root, "patches"),
     meta,
-    state: path8.join(meta, "state.json"),
-    lock: path8.join(meta, "lock"),
-    cache: path8.join(meta, "cache"),
-    history: path8.join(meta, "history.jsonl")
+    state: path10.join(meta, "state.json"),
+    lock: path10.join(meta, "lock"),
+    cache: path10.join(meta, "cache"),
+    history: path10.join(meta, "history.jsonl")
   };
 }
 function slotDir(paths, value) {
@@ -2811,28 +3582,28 @@ function slotDir(paths, value) {
   if (slot.path === void 0 || slot.path === null) {
     throw new Error(`\u69FD\u4F4D ${slot.id} \u6CA1\u6709\u8BB0\u5F55 path\uFF1A\u6C60\u5B9A\u4E49\u76EE\u5F55\u91CC\u7684 slots/ \u5E03\u5C40\u5DF2\u4E0D\u518D\u652F\u6301\uFF0C\u8BF7\u5728 ${paths.state} \u91CC\u5199\u5165\u5B83\u7684\u5B9E\u9645\u7EDD\u5BF9\u76EE\u5F55\uFF0C\u5E76\u628A\u6240\u5728\u76EE\u5F55\u52A0\u8FDB [storage].roots`);
   }
-  if (typeof slot.path !== "string" || !path8.isAbsolute(slot.path) || path8.basename(path8.normalize(slot.path)) !== slot.id || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(slot.path) || /[\u0000-\u001f]/.test(slot.path)) {
+  if (typeof slot.path !== "string" || !path10.isAbsolute(slot.path) || path10.basename(path10.normalize(slot.path)) !== slot.id || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(slot.path) || /[\u0000-\u001f]/.test(slot.path)) {
     throw new Error(`\u69FD\u4F4D ${slot.id} \u7684 path \u5FC5\u987B\u662F\u4EE5\u69FD\u4F4D\u7F16\u53F7\u7ED3\u5C3E\u7684\u672C\u673A\u7EDD\u5BF9\u76EE\u5F55`);
   }
-  return path8.normalize(slot.path);
+  return path10.normalize(slot.path);
 }
 function branchDirName(branch) {
   return branch.replace(/[\\/:*?"<>|\s]/g, "_");
 }
 function branchLink(paths, branch) {
-  return path8.join(paths.branch, branchDirName(branch));
+  return path10.join(paths.branch, branchDirName(branch));
 }
 function ensureLayout(paths) {
   for (const dir of [paths.branch, paths.patches, paths.meta, paths.cache]) {
-    mkdirSync5(dir, { recursive: true });
+    mkdirSync7(dir, { recursive: true });
   }
-  if (!existsSync5(paths.state)) {
+  if (!existsSync7(paths.state)) {
     writeJsonAtomic(paths.state, { version: 1, slots: [] });
   }
 }
 function readState(paths) {
-  if (!existsSync5(paths.state)) return { version: 1, slots: [] };
-  const value = JSON.parse(readFileSync2(paths.state, "utf8"));
+  if (!existsSync7(paths.state)) return { version: 1, slots: [] };
+  const value = JSON.parse(readFileSync4(paths.state, "utf8"));
   if (!value || !Array.isArray(value.slots)) throw new Error(`${paths.state} \u683C\u5F0F\u4E0D\u5BF9`);
   const ids = /* @__PURE__ */ new Set();
   const locations = /* @__PURE__ */ new Set();
@@ -2847,7 +3618,7 @@ function readState(paths) {
 }
 function writeJsonAtomic(file, value) {
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync4(tmp, `${JSON.stringify(value, null, 2)}
+  writeFileSync5(tmp, `${JSON.stringify(value, null, 2)}
 `, "utf8");
   renameSync(tmp, file);
 }
@@ -2866,10 +3637,10 @@ var LOCK_WAIT_MS = 15e3;
 function isStaleLock(file, now = Date.now()) {
   let info;
   try {
-    info = JSON.parse(readFileSync2(file, "utf8"));
+    info = JSON.parse(readFileSync4(file, "utf8"));
   } catch {
     try {
-      return now - statSync(file).mtimeMs > 1e4;
+      return now - statSync2(file).mtimeMs > 1e4;
     } catch {
       return true;
     }
@@ -2910,7 +3681,7 @@ async function acquireLock(file, waitMs2 = LOCK_WAIT_MS) {
     if (Date.now() >= deadline) {
       let holder = "";
       try {
-        holder = readFileSync2(file, "utf8");
+        holder = readFileSync4(file, "utf8");
       } catch {
       }
       throw new Error(`\u6C60\u72B6\u6001\u9501\u88AB\u5360\u7528\u8D85\u8FC7 ${Math.round(waitMs2 / 1e3)} \u79D2\uFF1A${holder || file}`);
@@ -2962,14 +3733,14 @@ function nextSlotId(state) {
 }
 function appendHistory(paths, entry) {
   try {
-    appendFileSync2(paths.history, `${JSON.stringify(entry)}
+    appendFileSync3(paths.history, `${JSON.stringify(entry)}
 `, "utf8");
   } catch {
   }
 }
 function recentBranches(paths, limit = 20) {
-  if (!existsSync5(paths.history)) return [];
-  const lines = readFileSync2(paths.history, "utf8").split(/\r?\n/).filter(Boolean);
+  if (!existsSync7(paths.history)) return [];
+  const lines = readFileSync4(paths.history, "utf8").split(/\r?\n/).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
@@ -2985,8 +3756,8 @@ function recentBranches(paths, limit = 20) {
 }
 
 // packs/workingCopyPool/src/svn.ts
-import { existsSync as existsSync6 } from "node:fs";
-import path9 from "node:path";
+import { existsSync as existsSync8 } from "node:fs";
+import path11 from "node:path";
 var SvnError = class extends Error {
   constructor(message, output) {
     super(message);
@@ -3011,7 +3782,7 @@ async function svn(ctx, args, options = {}) {
     fullStdout: !options.onLine && !counter
   }).done;
   if (result.cancelled) {
-    const note = options.wc && existsSync6(path9.join(options.wc, ".svn")) ? await cleanupAfterInterrupt(args, { cwd: options.wc, logFile: ctx.logFile }) : "";
+    const note = options.wc && existsSync8(path11.join(options.wc, ".svn")) ? await cleanupAfterInterrupt(args, { cwd: options.wc, logFile: ctx.logFile }) : "";
     if (result.timedOut && !ctx.abortSignal.aborted) throw new SvnError(`svn ${args[0]} \u8D85\u65F6${note}`, result.stderr);
     throw new Cancelled(`\u5DF2\u53D6\u6D88${note}`);
   }
@@ -3032,13 +3803,13 @@ function parseInfoXml(xml) {
   while (match = re.exec(xml)) {
     const attrs = match[1];
     const body = match[2];
-    const attr2 = (name) => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
+    const attr3 = (name) => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
     const url = /<url>([\s\S]*?)<\/url>/.exec(body)?.[1];
     const commit = /<commit\b[^>]*\brevision="(\d+)"/.exec(body)?.[1];
     out.push({
-      path: unescapeXml(attr2("path") ?? "").replace(/\\/g, "/"),
-      kind: attr2("kind") ?? "",
-      revision: Number(attr2("revision") ?? -1),
+      path: unescapeXml(attr3("path") ?? "").replace(/\\/g, "/"),
+      kind: attr3("kind") ?? "",
+      revision: Number(attr3("revision") ?? -1),
       url: unescapeXml(url ?? ""),
       depth: /<depth>([\s\S]*?)<\/depth>/.exec(body)?.[1],
       lastChangedRev: commit ? Number(commit) : void 0
@@ -3051,29 +3822,8 @@ async function svnInfo(ctx, target, extra = []) {
   if (result.code !== 0) return void 0;
   return parseInfoXml(result.stdout)[0];
 }
-function parseStatusXml(xml) {
-  const out = [];
-  const re = /<entry\b([^>]*)>([\s\S]*?)<\/entry>/g;
-  let match;
-  while (match = re.exec(xml)) {
-    const p = /\bpath="([^"]*)"/.exec(match[1])?.[1];
-    const wc = /<wc-status\b([^>]*)>([\s\S]*?)<\/wc-status>|<wc-status\b([^>]*)\/>/.exec(match[2]);
-    if (p === void 0 || !wc) continue;
-    const attrs = wc[1] ?? wc[3] ?? "";
-    const body = wc[2] ?? "";
-    const attr2 = (name) => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
-    out.push({
-      path: unescapeXml(p).replace(/\\/g, "/"),
-      item: attr2("item") ?? "normal",
-      props: attr2("props") ?? "none",
-      treeConflicted: attr2("tree-conflicted") === "true",
-      wcLocked: attr2("wc-locked") === "true",
-      switched: attr2("switched") === "true",
-      locked: /<lock>/.test(body)
-    });
-  }
-  return out;
-}
+var parseStatusXml = parseStatusItems;
+var relTo = relativeTo;
 var VERSIONED_CHANGE = /* @__PURE__ */ new Set(["modified", "added", "deleted", "replaced", "missing"]);
 function summarizeStatus(items) {
   const versioned = [];
@@ -3108,19 +3858,11 @@ async function svnStatus(ctx, wc, timeoutMs) {
   const result = await svn(ctx, ["status", "--xml", wc], { timeoutMs: timeoutMs ?? Math.min(ctx.timeoutMs, 10 * 6e4) });
   return summarizeStatus(parseStatusXml(result.stdout).map((it) => ({ ...it, path: relTo(wc, it.path, ctx.cwd) })));
 }
-function relTo(wc, p, cwd) {
-  const resolved = Boolean(cwd) && !path9.isAbsolute(p);
-  const norm = (resolved ? path9.resolve(cwd, p) : p).replace(/\\/g, "/");
-  const root = (resolved ? path9.resolve(wc) : wc).replace(/\\/g, "/").replace(/\/+$/, "");
-  if (norm === root) return ".";
-  if (norm.startsWith(`${root}/`)) return norm.slice(root.length + 1);
-  return norm;
-}
 function isObstruction(text) {
   return /E155000|E155037|E195016|obstruct|tree conflict|树冲突|阻碍/i.test(text);
 }
 function abs(wc, rel) {
-  return rel ? path9.join(wc, ...rel.split("/")) : wc;
+  return rel ? path11.join(wc, ...rel.split("/")) : wc;
 }
 var DEPTH_LABEL = { exclude: "\u6392\u9664", empty: "\u7A7A\u58F3", files: "\u68C0\u51FA", immediates: "\u5C55\u5F00", infinity: "\u68C0\u51FA" };
 async function setDepth(ctx, wc, depth, rels) {
@@ -3203,7 +3945,7 @@ async function applySparse(ctx, wc, spec) {
     }
     for (const [child, d] of toAdd) {
       await setDepth(ctx, wc, plan.wcDepth(child, d), [child]);
-      if (!existsSync6(abs(wc, child))) {
+      if (!existsSync8(abs(wc, child))) {
         missing.push(child);
         continue;
       }
@@ -3241,11 +3983,11 @@ async function behindCount(ctx, wc) {
 async function svnBusy(wc, abortSignal) {
   if (process.platform === "win32") {
     const list = await listOccupants(wc, abortSignal);
-    return list.some((item) => /(^|[\\/])svn(\.exe)?$/i.test(item.name) || /^svn/i.test(path9.parse(item.name).name));
+    return list.some((item) => /(^|[\\/])svn(\.exe)?$/i.test(item.name) || /^svn/i.test(path11.parse(item.name).name));
   }
   try {
     const result = await spawnCaptured({ command: "ps", args: ["-Ao", "pid=,command="], timeoutMs: 1e4, abortSignal });
-    const needle = path9.resolve(wc);
+    const needle = path11.resolve(wc);
     return result.stdout.split(/\r?\n/).some((line) => {
       const match = /^\s*(\d+)\s+(.*)$/.exec(line);
       if (!match || Number(match[1]) === process.pid) return false;
@@ -3258,9 +4000,8 @@ async function svnBusy(wc, abortSignal) {
 }
 
 // packs/workingCopyPool/src/archive.ts
-function archiveStamp(now) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+function archiveRootFor(paths, branch) {
+  return path12.join(paths.patches, branchDirName(branch || "_unknown"));
 }
 async function archiveChanges(ctx, paths, wc, branch, now, status3) {
   const st = status3 ?? await svnStatus(ctx, wc);
@@ -3270,29 +4011,26 @@ async function archiveChanges(ctx, paths, wc, branch, now, status3) {
   if (st.versioned.length === 0 && st.unversioned.length === 0) {
     return { versioned: 0, unversioned: 0 };
   }
-  const base = path10.join(paths.patches, branchDirName(branch || "_unknown"), archiveStamp(now));
-  let dir = base;
-  for (let i = 2; existsSync7(dir); i++) dir = `${base}_${i}`;
-  mkdirSync6(dir, { recursive: true });
+  const dir = createArchiveDir(archiveRootFor(paths, branch), now);
   if (st.versioned.length > 0) {
     const diff = await svn(ctx, ["diff", "--internal-diff", wc], { timeoutMs: Math.min(ctx.timeoutMs, 30 * 6e4) });
-    writeFileSync5(path10.join(dir, "changes.patch"), toRelativePatch(diff.stdout, wc), "utf8");
+    writeFileSync6(path12.join(dir, "changes.patch"), toRelativePatch(diff.stdout, wc), "utf8");
     const copied = [];
     for (const it of st.versioned) {
       if (it.item !== "modified" && it.item !== "added" && it.item !== "replaced") continue;
-      const from = path10.join(wc, ...it.path.split("/"));
+      const from = path12.join(wc, ...it.path.split("/"));
       try {
-        if (!statSync2(from).isFile()) continue;
+        if (!statSync3(from).isFile()) continue;
       } catch {
         continue;
       }
-      const to = path10.join(dir, "files", ...it.path.split("/"));
-      mkdirSync6(path10.dirname(to), { recursive: true });
+      const to = path12.join(dir, "files", ...it.path.split("/"));
+      mkdirSync8(path12.dirname(to), { recursive: true });
       copyFileSync(from, to);
       copied.push(it.path);
     }
-    writeFileSync5(
-      path10.join(dir, "versioned.txt"),
+    writeFileSync6(
+      path12.join(dir, "versioned.txt"),
       `${st.versioned.map((it) => `${it.item.padEnd(9)} ${it.path}`).join("\n")}
 `,
       "utf8"
@@ -3300,11 +4038,11 @@ async function archiveChanges(ctx, paths, wc, branch, now, status3) {
     await svn(ctx, ["revert", "-R", wc], { wc, timeoutMs: Math.min(ctx.timeoutMs, 30 * 6e4) });
   }
   if (st.unversioned.length > 0) {
-    writeFileSync5(path10.join(dir, "unversioned.txt"), `${st.unversioned.map((it) => it.path).join("\n")}
+    writeFileSync6(path12.join(dir, "unversioned.txt"), `${st.unversioned.map((it) => it.path).join("\n")}
 `, "utf8");
   }
-  writeFileSync5(
-    path10.join(dir, "README.txt"),
+  writeFileSync6(
+    path12.join(dir, "README.txt"),
     [
       `\u5206\u652F\uFF1A${branch}`,
       `\u65F6\u95F4\uFF1A${now.toISOString()}`,
@@ -3316,14 +4054,6 @@ async function archiveChanges(ctx, paths, wc, branch, now, status3) {
     "utf8"
   );
   return { dir, versioned: st.versioned.length, unversioned: st.unversioned.length };
-}
-function toRelativePatch(diff, wc) {
-  const variants = [wc, wc.replace(/\\/g, "/")].map((p) => p.replace(/[\\/]+$/, ""));
-  let out = diff;
-  for (const v of new Set(variants)) {
-    out = out.split(`${v}/`).join("").split(`${v}\\`).join("");
-  }
-  return out;
 }
 function linkExists(link) {
   try {
@@ -3350,7 +4080,7 @@ function isJunction(link) {
 }
 function linkTarget(link) {
   try {
-    return path10.resolve(path10.dirname(link), readlinkSync(link));
+    return path12.resolve(path12.dirname(link), readlinkSync(link));
   } catch {
     return void 0;
   }
@@ -3362,7 +4092,7 @@ function removeLink(link) {
     unlinkSync3(link);
   } catch (error) {
     if (process.platform !== "win32") throw error;
-    rmSync2(link, { force: true });
+    rmSync3(link, { force: true });
   }
 }
 function createLink(target, link) {
@@ -3370,52 +4100,52 @@ function createLink(target, link) {
     if (isLink(link) && samePath(linkTarget(link), target)) return;
     removeLink(link);
   }
-  mkdirSync6(path10.dirname(link), { recursive: true });
-  symlinkSync(path10.resolve(target), link, process.platform === "win32" ? "junction" : "dir");
+  mkdirSync8(path12.dirname(link), { recursive: true });
+  symlinkSync(path12.resolve(target), link, process.platform === "win32" ? "junction" : "dir");
 }
 function samePath(a, b) {
   if (!a || !b) return false;
   const norm = (p) => {
-    const r = path10.resolve(p).replace(/[\\/]+$/, "");
+    const r = path12.resolve(p).replace(/[\\/]+$/, "");
     return process.platform === "win32" ? r.toLowerCase() : r;
   };
   return norm(a) === norm(b);
 }
 
 // packs/workingCopyPool/src/storage.ts
-import { lstatSync as lstatSync2, realpathSync as realpathSync2, statfsSync, statSync as statSync3 } from "node:fs";
-import path11 from "node:path";
+import { lstatSync as lstatSync2, realpathSync as realpathSync2, statfsSync, statSync as statSync4 } from "node:fs";
+import path13 from "node:path";
 var StorageOwnershipError = class extends Error {
 };
 var GIB = 1024 ** 3;
 function inspectStorage(root) {
   const physical2 = realpathSync2(root);
-  const stat = statSync3(physical2);
+  const stat = statSync4(physical2);
   if (!stat.isDirectory()) throw new Error("\u4E0D\u662F\u76EE\u5F55");
   const fs = statfsSync(physical2);
   return { root: physical2, volume: String(stat.dev), freeGiB: Number(fs.bavail) * Number(fs.bsize) / GIB };
 }
 function assertStorageParent(wc) {
   try {
-    if (!statSync3(path11.dirname(wc)).isDirectory()) throw new Error("\u4E0D\u662F\u76EE\u5F55");
+    if (!statSync4(path13.dirname(wc)).isDirectory()) throw new Error("\u4E0D\u662F\u76EE\u5F55");
   } catch (error) {
-    throw new Error(`\u69FD\u4F4D\u5B58\u50A8\u76EE\u5F55\u4E0D\u53EF\u8BBF\u95EE\uFF1A${path11.dirname(wc)}\uFF1B\u4FDD\u7559\u69FD\u4F4D\u8BB0\u5F55\uFF0C\u8BF7\u68C0\u67E5\u78C1\u76D8\u6302\u8F7D\uFF08${error instanceof Error ? error.message : String(error)}\uFF09`);
+    throw new Error(`\u69FD\u4F4D\u5B58\u50A8\u76EE\u5F55\u4E0D\u53EF\u8BBF\u95EE\uFF1A${path13.dirname(wc)}\uFF1B\u4FDD\u7559\u69FD\u4F4D\u8BB0\u5F55\uFF0C\u8BF7\u68C0\u67E5\u78C1\u76D8\u6302\u8F7D\uFF08${error instanceof Error ? error.message : String(error)}\uFF09`);
   }
 }
 function key(p) {
-  const normalized = path11.resolve(p);
+  const normalized = path13.resolve(p);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 function physical(p) {
   try {
     return realpathSync2(p);
   } catch {
-    return path11.resolve(p);
+    return path13.resolve(p);
   }
 }
 function contains(parent, child) {
-  const rel = path11.relative(key(parent), key(child));
-  return rel === "" || !rel.startsWith(`..${path11.sep}`) && rel !== ".." && !path11.isAbsolute(rel);
+  const rel = path13.relative(key(parent), key(child));
+  return rel === "" || !rel.startsWith(`..${path13.sep}`) && rel !== ".." && !path13.isAbsolute(rel);
 }
 function existsEntry(p) {
   try {
@@ -3427,7 +4157,7 @@ function existsEntry(p) {
   }
 }
 function rootOf(storage, wc) {
-  const parent = path11.dirname(wc);
+  const parent = path13.dirname(wc);
   const lexical = key(parent);
   const real = key(physical(parent));
   return storage.roots.find((r) => key(r.path) === lexical || key(physical(r.path)) === real);
@@ -3447,7 +4177,7 @@ function selectSlotPath(paths, state, id, storage, inspect = inspectStorage) {
     if (slot.op?.kind !== "create") continue;
     try {
       const wc = slotDir(paths, slot);
-      const disk = inspect(path11.dirname(wc));
+      const disk = inspect(path13.dirname(wc));
       reservations.set(disk.volume, (reservations.get(disk.volume) ?? 0) + minFreeFor(storage, wc));
     } catch {
     }
@@ -3457,7 +4187,7 @@ function selectSlotPath(paths, state, id, storage, inspect = inspectStorage) {
     try {
       const disk = inspect(root.path);
       if (!Number.isFinite(disk.freeGiB) || disk.freeGiB < 0) throw new Error("\u65E0\u6CD5\u8BFB\u53D6\u6709\u6548\u7684\u5269\u4F59\u7A7A\u95F4");
-      const wc = path11.join(disk.root, id);
+      const wc = path13.join(disk.root, id);
       if (seen.has(key(wc))) continue;
       seen.add(key(wc));
       if (contains(physicalPool, wc) || contains(wc, physicalPool) || protectedDirs.some((p) => contains(p, wc) || contains(wc, p))) {
@@ -3482,48 +4212,15 @@ ${notes.join("\n")}
 }
 function checkCreationSpace(wc, minFreeGiB) {
   assertStorageParent(wc);
-  const disk = inspectStorage(path11.dirname(wc));
+  const disk = inspectStorage(path13.dirname(wc));
   if (disk.freeGiB < minFreeGiB) {
     throw new Error(`\u69FD\u4F4D ${wc} \u5269\u4F59 ${disk.freeGiB.toFixed(1)} GiB\uFF0C\u65B0\u5EFA\u8981\u6C42\u81F3\u5C11 ${minFreeGiB} GiB\uFF1B\u672A\u5F00\u59CB\u68C0\u51FA`);
   }
 }
 
-// packs/workingCopyPool/src/hooks.ts
-import { existsSync as existsSync8 } from "node:fs";
-import path12 from "node:path";
-async function runBeforeUpdate(config, ctx, wc) {
-  const argv = config.hooks?.beforeUpdate;
-  if (!argv) return;
-  if (ctx.abortSignal.aborted) throw new Cancelled("\u5DF2\u53D6\u6D88");
-  if (!existsSync8(path12.join(wc, ".svn"))) throw new Error("\u9879\u76EE\u94A9\u5B50\u76EE\u6807\u4E0D\u662F SVN \u5DE5\u4F5C\u526F\u672C\u6839");
-  ctx.onProgress?.(`\u6267\u884C\u9879\u76EE\u66F4\u65B0\u524D\u94A9\u5B50\uFF08${path12.basename(wc)}\uFF09`, null);
-  const result = await runCommand({
-    command: argv[0],
-    args: [...argv.slice(1), "--project-root", wc],
-    cwd: wc,
-    logFile: ctx.logFile,
-    timeoutMs: Math.min(ctx.timeoutMs, 10 * 6e4),
-    abortSignal: ctx.abortSignal,
-    gracefulMs: 6e3,
-    cancelStdin: '{"type":"cancel"}',
-    onStdoutLine: (line) => {
-      try {
-        const frame = JSON.parse(line);
-        if (frame.type === "progress" && typeof frame.message === "string") {
-          ctx.onProgress?.(frame.message, typeof frame.percent === "number" ? frame.percent : null);
-        }
-      } catch {
-      }
-    }
-  }).done;
-  if (ctx.abortSignal.aborted || result.cancelled && !result.timedOut) throw new Cancelled("\u9879\u76EE\u94A9\u5B50\u5DF2\u53D6\u6D88");
-  if (result.timedOut) throw new Error("\u9879\u76EE\u66F4\u65B0\u524D\u94A9\u5B50\u8D85\u65F6\uFF1B\u672A\u6267\u884C svn update");
-  if (result.code !== 0) throw new Error(`\u9879\u76EE\u66F4\u65B0\u524D\u94A9\u5B50\u5931\u8D25\uFF08${result.code}\uFF09\uFF1B\u672A\u6267\u884C svn update\uFF1A${(result.stderr || result.stdout).trim().slice(-2e3)}`);
-}
-
 // packs/workingCopyPool/src/pool.ts
 function openPool(ctx, now = () => /* @__PURE__ */ new Date()) {
-  const root = path13.resolve(ctx.cwd);
+  const root = path14.resolve(ctx.cwd);
   const config = loadConfig(root);
   const paths = poolPaths(root);
   ensureLayout(paths);
@@ -3531,6 +4228,40 @@ function openPool(ctx, now = () => /* @__PURE__ */ new Date()) {
 }
 function svnCtx(pool) {
   return { ...pool.ctx, cwd: pool.root };
+}
+var loadedRules = /* @__PURE__ */ new WeakMap();
+function poolRules(pool) {
+  const cfg = pool.config.svnRules;
+  if (!cfg) return void 0;
+  let loaded = loadedRules.get(pool);
+  if (!loaded) {
+    const rules = loadSvnRules(cfg.file);
+    discardSet(rules, cfg.enable);
+    loaded = { rules, enable: cfg.enable };
+    loadedRules.set(pool, loaded);
+  }
+  return loaded;
+}
+async function runPoolRules(pool, wc, branch, phase, archiveDir) {
+  const loaded = poolRules(pool);
+  if (!loaded) return void 0;
+  const sctx = svnCtx(pool);
+  return applySvnRules({
+    wc,
+    cwd: sctx.cwd,
+    run: (args, o) => svn(sctx, args, { wc, allowFail: o?.allowFail, timeoutMs: o?.timeoutMs }),
+    rules: loaded.rules,
+    enable: loaded.enable,
+    archiveRoot: archiveRootFor(pool.paths, branch),
+    archiveDir,
+    now: pool.now(),
+    phase,
+    cleanupLocks: true,
+    onStage: (message) => stage(pool, `${path14.basename(wc)} ${message}`)
+  });
+}
+function shortReason(text) {
+  return text.length > 600 ? `${text.slice(0, 600)}\u2026` : text;
 }
 function stage(pool, message) {
   pool.ctx.onProgress?.(message, null);
@@ -3606,7 +4337,7 @@ function describeSlot(view, now) {
 }
 async function releaseSlotOccupants(pool, wc) {
   if (process.platform !== "win32" || !existsSync9(wc)) return void 0;
-  stage(pool, `\u91CA\u653E ${path13.basename(wc)} \u7684\u5360\u7528`);
+  stage(pool, `\u91CA\u653E ${path14.basename(wc)} \u7684\u5360\u7528`);
   const prepared = await prepareExclusiveAccess({ target: wc, abortSignal: pool.ctx.abortSignal, includeUnityByName: false });
   if (prepared.remaining.length > 0) {
     throw new Error(`\u65E0\u6CD5\u91CA\u653E\u5360\u7528\uFF1A${prepared.remaining.map((o) => `${o.name}(${o.pid})`).join(", ")}\uFF0C\u8BF7\u5148\u5173\u95ED\u540E\u518D\u8BD5`);
@@ -3681,14 +4412,14 @@ async function recoverSlot(pool, id, op, branch) {
   }
   const sctx = svnCtx(pool);
   const removeSlot = async (why) => {
-    if (existsSync9(wc)) rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
+    if (existsSync9(wc)) rmSync4(wc, { recursive: true, force: true, maxRetries: 3 });
     await mutate(pool.paths, (state) => {
       state.slots = state.slots.filter((s) => s.id !== id);
     });
     return `${id} ${why}\uFF0C\u5DF2\u5220\u9664\u69FD\u4F4D`;
   };
   if (op.kind === "delete") return removeSlot("\u5220\u9664\u4E2D\u65AD");
-  if (!existsSync9(path13.join(wc, ".svn"))) return removeSlot(op.kind === "create" ? "\u65B0\u5EFA\u4E2D\u65AD" : "\u5DE5\u4F5C\u526F\u672C\u7F3A\u5931");
+  if (!existsSync9(path14.join(wc, ".svn"))) return removeSlot(op.kind === "create" ? "\u65B0\u5EFA\u4E2D\u65AD" : "\u5DE5\u4F5C\u526F\u672C\u7F3A\u5931");
   if (await svnBusy(wc, pool.ctx.abortSignal)) {
     await mutate(pool.paths, (state) => {
       const slot2 = state.slots.find((s) => s.id === id);
@@ -3719,8 +4450,8 @@ async function recoverSlot(pool, id, op, branch) {
     if (!ourOp(slot2)) return false;
     slot2.url = info.url;
     slot2.branch = complete ? target : st.incomplete ? "" : actual;
-    slot2.phase = "ready";
-    slot2.blockedReason = void 0;
+    slot2.phase = st.problems.length ? "blocked" : "ready";
+    slot2.blockedReason = st.problems.length ? `\u4E2D\u65AD\u540E\u9057\u7559\uFF1A${st.problems.join("\uFF1B")}` : void 0;
     slot2.op = void 0;
     return true;
   });
@@ -3769,7 +4500,7 @@ async function reconcile(pool, ids) {
       continue;
     }
     if (seen.phase !== "ready") continue;
-    if (!existsSync9(path13.join(wc, ".svn"))) {
+    if (!existsSync9(path14.join(wc, ".svn"))) {
       const done = await mutate(pool.paths, (state) => {
         const slot = state.slots.find((s) => s.id === seen.id);
         if (!same(slot)) return false;
@@ -3948,6 +4679,15 @@ async function switchFlow(pool, claimed, branch, url, notes) {
   }
   try {
     stage(pool, `${claimed.id}\uFF1A\u5B58\u6863\u672C\u5730\u6539\u52A8`);
+    const ruled = await runPoolRules(pool, wc, from, "\u5207\u6362\u524D");
+    if (ruled && ruled.blocked.length > 0) {
+      const reason = shortReason(describeBlocked(ruled));
+      await back({ phase: "blocked", blockedReason: reason });
+      notes.push(`${claimed.id}\uFF08${from}\uFF09\u6709\u9700\u8981\u4EBA\u5904\u7406\u7684\u95EE\u9898\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E\uFF1A${reason}`);
+      return "blocked";
+    }
+    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    if (ruleNote) notes.push(`${from} ${ruleNote}`);
     const archived = await archiveChanges(sctx, pool.paths, wc, from, pool.now());
     if (archived.blocked) {
       await back({ phase: "blocked", blockedReason: archived.blocked });
@@ -3969,7 +4709,24 @@ async function switchFlow(pool, claimed, branch, url, notes) {
   }
   try {
     stage(pool, `${claimed.id}\uFF1Asvn switch ${url}`);
-    await svn(sctx, ["switch", "--ignore-ancestry", url, wc], { wc, progress: "\u5207\u6362" });
+    await svn(sctx, ["switch", "--ignore-ancestry", "--accept", "postpone", url, wc], { wc, progress: "\u5207\u6362" });
+    const ruled = await runPoolRules(pool, wc, branch, "\u5207\u6362\u540E");
+    let leftover;
+    if (ruled) {
+      if (ruled.blocked.length > 0) leftover = describeBlocked(ruled);
+      const ruleNote = summarizeRules(ruled);
+      if (ruleNote) notes.push(`${branch} ${ruleNote}`);
+    } else {
+      const st = await svnStatus(sctx, wc);
+      if (st.problems.length > 0) leftover = `\u5207\u6362\u540E\u6709\u51B2\u7A81\uFF1A${st.problems.join("\uFF1B")}`;
+    }
+    if (leftover) {
+      const reason = shortReason(leftover);
+      const info = await svnInfo(sctx, wc).catch(() => void 0);
+      await back({ phase: "blocked", blockedReason: reason, branch, url: info?.url ?? url });
+      notes.push(`${claimed.id} \u5207\u6362\u5230 ${branch} \u540E\u6709\u9700\u8981\u4EBA\u5904\u7406\u7684\u95EE\u9898\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E\uFF1A${reason}`);
+      return "blocked";
+    }
     const sparse = await applySparse(sctx, wc, pool.config.sparse);
     if (sparse.length) notes.push(`\u7A00\u758F\uFF1A${sparse.join("\uFF1B")}`);
     return await finishCheck(pool, wc, url);
@@ -3996,7 +4753,7 @@ async function createFlow(pool, claimed, branch, url, notes) {
   stage(pool, `${claimed.id}\uFF1A\u65B0\u5EFA ${branch}${isFullCheckout(spec) ? "" : `\uFF08${describeSparse(spec)[0]}\uFF09`}\uFF0C\u5B9E\u9645\u76EE\u5F55 ${wc}`);
   try {
     checkCreationSpace(wc, minFreeFor(pool.config.storage, wc));
-    mkdirSync7(wc);
+    mkdirSync9(wc);
     created = true;
     await mutate(pool.paths, (state) => {
       const slot = findSlot(state, claimed.id);
@@ -4020,7 +4777,7 @@ async function createFlow(pool, claimed, branch, url, notes) {
         });
         throw storageError;
       }
-      rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
+      rmSync4(wc, { recursive: true, force: true, maxRetries: 3 });
     }
     await mutate(pool.paths, (state) => {
       state.slots = state.slots.filter((s) => s.id !== claimed.id);
@@ -4064,7 +4821,7 @@ function realPath(p) {
   }
 }
 async function holdSlot(pool, branch, holdId, expectedPath, label) {
-  if (!path13.isAbsolute(expectedPath)) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${expectedPath}`);
+  if (!path14.isAbsolute(expectedPath)) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${expectedPath}`);
   const ids = new Set(readState(pool.paths).slots.filter((s) => s.branch === branch).map((s) => s.id));
   if (ids.size) await reconcile(pool, ids);
   const now = pool.now();
@@ -4133,6 +4890,13 @@ async function gc2(pool) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A\u5DE5\u4F5C\u526F\u672C\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u4FDD\u7559\u963B\u585E\u4E0E\u8BB0\u5F55`);
         continue;
       }
+      if (poolRules(pool)) {
+        const reviewed = await reviewByRules(pool, slot, wc, info.url);
+        if (reviewed) {
+          report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${reviewed}`);
+          continue;
+        }
+      }
       const st = await svnStatus(sctx, wc);
       if (st.problems.length > 0 || st.wcLocked) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${st.problems.join("\uFF1B") || "\u5DE5\u4F5C\u526F\u672C\u88AB\u9501"}`);
@@ -4191,6 +4955,45 @@ async function gc2(pool) {
   report.patches = prunePatches(pool);
   return report;
 }
+async function reviewByRules(pool, slot, wc, url) {
+  const now = pool.now();
+  const claim = await mutate(pool.paths, (state) => {
+    const s = state.slots.find((x) => x.id === slot.id);
+    if (!s || s.phase !== "blocked" || s.op) return "\u5DF2\u88AB\u5176\u4ED6\u4EFB\u52A1\u5904\u7406";
+    if (isHeld(s)) return `\u53D7\u4FDD\u62A4\uFF08${holdNames(s)}\uFF09\uFF0C\u4E0D\u6309\u89C4\u5219\u5904\u7406`;
+    if (leaseActive(s.lease, now)) return `\u88AB\u5360\u7528${describeLease(s.lease, now)}\uFF0C\u4E0D\u6309\u89C4\u5219\u5904\u7406`;
+    if (s.ownershipUnconfirmed) return "\u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4";
+    s.op = { kind: "update", target: s.branch, pid: process.pid, at: now.toISOString() };
+    return void 0;
+  });
+  if (claim) return `${claim}\uFF1A${slot.blockedReason ?? ""}`;
+  const release2 = async (patch) => {
+    await mutate(pool.paths, (state) => {
+      const s = state.slots.find((x) => x.id === slot.id);
+      if (s && ourOp(s)) Object.assign(s, { op: void 0 }, patch);
+    });
+  };
+  try {
+    if (await svnBusy(wc, pool.ctx.abortSignal)) {
+      await release2({});
+      return `\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\uFF0C\u4E0B\u6B21\u518D\u590D\u67E5\uFF1A${slot.blockedReason ?? ""}`;
+    }
+    const branch = slot.branch || branchFromUrl(pool.config, url) || "";
+    const ruled = await runPoolRules(pool, wc, branch, "\u590D\u67E5");
+    if (ruled && ruled.blocked.length > 0) {
+      const reason = shortReason(describeBlocked(ruled));
+      await release2({ blockedReason: reason });
+      return reason;
+    }
+    await release2({});
+    const note = ruled ? summarizeRules(ruled) : "";
+    if (note) appendLog(pool.ctx.logFile, `[workingCopyPool] ${slot.id} ${note}`);
+    return void 0;
+  } catch (error) {
+    await release2({});
+    throw error;
+  }
+}
 async function retireSlot(pool, claimed) {
   const wc = slotDir(pool.paths, claimed);
   const notes = [];
@@ -4211,12 +5014,21 @@ async function retireSlot(pool, claimed) {
     const link = branchLink(pool.paths, claimed.branch);
     if (linkExists(link) && samePath(linkTarget(link), wc)) await dropLink(pool, link, wc, notes);
   }
-  if (existsSync9(path13.join(wc, ".svn"))) {
-    const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(async (error) => {
+  if (existsSync9(path14.join(wc, ".svn"))) {
+    const fail = async (error) => {
       if (error instanceof Cancelled) throw error;
       await back({});
       throw error;
-    });
+    };
+    const ruled = await runPoolRules(pool, wc, claimed.branch, "\u56DE\u6536\u524D").catch(fail);
+    if (ruled && ruled.blocked.length > 0) {
+      const reason = shortReason(describeBlocked(ruled));
+      await back({ phase: "blocked", blockedReason: reason });
+      return `${claimed.id} \u6709\u9700\u8981\u4EBA\u5904\u7406\u7684\u95EE\u9898\uFF0C\u6682\u4E0D\u5220\u9664\uFF1A${reason}`;
+    }
+    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    if (ruleNote) notes.push(ruleNote);
+    const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(fail);
     if (archived.blocked) {
       await back({ phase: "blocked", blockedReason: archived.blocked });
       return `${claimed.id} \u6709\u9700\u8981\u4EBA\u5904\u7406\u7684\u95EE\u9898\uFF0C\u6682\u4E0D\u5220\u9664\uFF1A${archived.blocked}`;
@@ -4231,7 +5043,7 @@ async function retireSlot(pool, claimed) {
     throw error;
   }
   stage(pool, `\u5220\u9664\u69FD\u4F4D ${claimed.id}`);
-  rmSync3(wc, { recursive: true, force: true, maxRetries: 3 });
+  rmSync4(wc, { recursive: true, force: true, maxRetries: 3 });
   await mutate(pool.paths, (state) => {
     state.slots = state.slots.filter((s) => s.id !== claimed.id);
   });
@@ -4250,7 +5062,7 @@ function syncLinks(pool) {
   const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
   if (existsSync9(pool.paths.branch)) {
     for (const name of readdirSync(pool.paths.branch)) {
-      const link = path13.join(pool.paths.branch, name);
+      const link = path14.join(pool.paths.branch, name);
       if (!isLink(link)) continue;
       const target = linkTarget(link);
       const want = wanted.get(name);
@@ -4265,7 +5077,7 @@ function syncLinks(pool) {
     }
   }
   for (const [name, dir] of wanted) {
-    const link = path13.join(pool.paths.branch, name);
+    const link = path14.join(pool.paths.branch, name);
     if (isLink(link) && samePath(linkTarget(link), dir)) continue;
     if (!existsSync9(dir)) continue;
     try {
@@ -4282,20 +5094,20 @@ function prunePatches(pool) {
   let removed = 0;
   if (!existsSync9(pool.paths.patches)) return 0;
   for (const branch of readdirSync(pool.paths.patches)) {
-    const dir = path13.join(pool.paths.patches, branch);
-    if (!statSync4(dir).isDirectory()) continue;
+    const dir = path14.join(pool.paths.patches, branch);
+    if (!statSync5(dir).isDirectory()) continue;
     for (const stamp of readdirSync(dir)) {
-      const entry = path13.join(dir, stamp);
+      const entry = path14.join(dir, stamp);
       try {
-        if (statSync4(entry).mtimeMs < cutoff) {
-          rmSync3(entry, { recursive: true, force: true });
+        if (statSync5(entry).mtimeMs < cutoff) {
+          rmSync4(entry, { recursive: true, force: true });
           removed += 1;
         }
       } catch {
       }
     }
     try {
-      if (readdirSync(dir).length === 0) rmSync3(dir, { recursive: true, force: true });
+      if (readdirSync(dir).length === 0) rmSync4(dir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -4322,7 +5134,8 @@ async function refreshOne(pool, branch) {
     if (slot.op) return { kind: "skip", why: `${slot.id} \u6B63\u5728\u88AB\u53E6\u4E00\u4E2A\u4EFB\u52A1\u5904\u7406` };
     if (isHeld(slot)) return { kind: "skip", why: `${slot.id} \u53D7\u4FDD\u62A4\uFF08${holdNames(slot)}\uFF09\uFF0C\u4E0D\u66F4\u65B0` };
     if (slot.ownershipUnconfirmed) return { kind: "skip", why: `${slot.id} \u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4\uFF0C\u9700\u4EBA\u5DE5\u68C0\u67E5` };
-    const retryBlocked = slot.phase === "blocked" && pool.config.hooks?.retryBlocked === true;
+    const rulesOn = Boolean(pool.config.svnRules);
+    const retryBlocked = slot.phase === "blocked" && rulesOn;
     if (slot.phase === "blocked" && !retryBlocked) return { kind: "skip", why: `${slot.id} \u963B\u585E\uFF1A${slot.blockedReason ?? ""}` };
     if (slot.phase !== "ready" && !retryBlocked) return { kind: "skip", why: `${slot.id} ${slot.phase}` };
     if (leaseActive(slot.lease, now)) return { kind: "skip", why: `${slot.id} \u88AB\u5360\u7528${describeLease(slot.lease, now)}\uFF0C\u4E0D\u62A2` };
@@ -4336,13 +5149,11 @@ async function refreshOne(pool, branch) {
   stage(pool, `\u66F4\u65B0 ${branch}\uFF08${claim.slot.id}\uFF09`);
   try {
     assertStorageParent(wc);
-    if (pool.config.hooks?.beforeUpdate) {
-      if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\u69FD\u4F4D\uFF0C\u672A\u6267\u884C\u9879\u76EE\u94A9\u5B50");
-      await releaseSlotOccupants(pool, wc);
-      await runBeforeUpdate(pool.config, pool.ctx, wc);
-      const status3 = await svnStatus(sctx, wc);
-      if (status3.problems.length) throw new Error(`\u9879\u76EE\u94A9\u5B50\u540E\u4ECD\u6709\u9700\u8981\u4EBA\u5DE5\u5904\u7406\u7684\u95EE\u9898\uFF1A${status3.problems.join("\uFF1B")}`);
-      if (status3.switched) throw new Error("\u9879\u76EE\u94A9\u5B50\u540E\u4ECD\u6709 switched \u8DEF\u5F84\uFF0C\u4FDD\u7559\u73B0\u573A\uFF0C\u8BF7\u4EBA\u5DE5\u786E\u8BA4\u5206\u652F\u5F52\u5C5E");
+    const loaded = poolRules(pool);
+    if (loaded) {
+      if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\u69FD\u4F4D\uFF0C\u672A\u6309\u89C4\u5219\u5904\u7406");
+      const released = await releaseSlotOccupants(pool, wc);
+      if (released) appendLog(pool.ctx.logFile, `[workingCopyPool] ${claim.slot.id} ${released}`);
     }
     const result = await svnCheckAndUpdate({
       workingCopy: wc,
@@ -4350,7 +5161,8 @@ async function refreshOne(pool, branch) {
       logFile: pool.ctx.logFile,
       abortSignal: pool.ctx.abortSignal,
       skipUpdate: false,
-      onConflict: "fail",
+      onConflict: loaded ? "rules" : "fail",
+      ...loaded ? { rules: { rules: loaded.rules, enable: loaded.enable, archiveRoot: archiveRootFor(pool.paths, branch), now: pool.now() } } : {},
       releaseOccupants: true,
       onProgress: (message, percent) => pool.ctx.onProgress?.(`${branch}\uFF1A${message}`, percent)
     });
@@ -4365,12 +5177,23 @@ async function refreshOne(pool, branch) {
       if (behind !== void 0) slot.behind = behind;
     });
     const last = result.detail.split(/\r?\n/).filter(Boolean).pop() ?? "\u5B8C\u6210";
-    return { branch, ok: true, detail: `\u5DF2\u66F4\u65B0\uFF08${claim.slot.id}\uFF0C\u843D\u540E ${behind ?? "\u672A\u77E5"}\uFF09${sparse.length ? `\uFF1B\u7A00\u758F\uFF1A${sparse.join("\uFF1B")}` : ""}\uFF1B${last}` };
+    const ruleNote = result.detail.split("\uFF1B").filter((part) => part.includes("\u89C4\u5219\u5904\u7406")).join("\uFF1B");
+    return {
+      branch,
+      ok: true,
+      detail: `\u5DF2\u66F4\u65B0\uFF08${claim.slot.id}\uFF0C\u843D\u540E ${behind ?? "\u672A\u77E5"}\uFF09${sparse.length ? `\uFF1B\u7A00\u758F\uFF1A${sparse.join("\uFF1B")}` : ""}${ruleNote && !last.includes(ruleNote) ? `\uFF1B${ruleNote}` : ""}\uFF1B${last}`
+    };
   } catch (error) {
     if (error instanceof Cancelled || pool.ctx.abortSignal.aborted) throw error;
+    const blockedReason = error instanceof RulesBlockedError ? shortReason(error.message) : void 0;
     await mutate(pool.paths, (state) => {
       const slot = state.slots.find((s) => s.id === claim.slot.id);
-      if (slot && ourOp(slot)) slot.op = void 0;
+      if (!slot || !ourOp(slot)) return;
+      slot.op = void 0;
+      if (blockedReason) {
+        slot.phase = "blocked";
+        slot.blockedReason = blockedReason;
+      }
     });
     throw error;
   }
@@ -4383,13 +5206,13 @@ function resolveLease(pool, ttl, tag) {
 }
 
 // packs/workingCopyPool/src/queries.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
-import path14 from "node:path";
+import { existsSync as existsSync10, mkdirSync as mkdirSync10, readFileSync as readFileSync5, writeFileSync as writeFileSync7 } from "node:fs";
+import path15 from "node:path";
 var LIST_CACHE_MS = 10 * 6e4;
 var LIST_TIMEOUT_MS = 1e4;
 var STATUS_BUDGET_MS = 12e3;
 function peekPool(ctx, now = () => /* @__PURE__ */ new Date()) {
-  const root = path14.resolve(ctx.cwd);
+  const root = path15.resolve(ctx.cwd);
   return { root, paths: poolPaths(root), config: loadConfig(root), ctx, now };
 }
 function readOnlyCtx(pool, timeoutMs) {
@@ -4408,7 +5231,7 @@ function unescape(text) {
   return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
 function cacheFile(pool) {
-  return path14.join(pool.paths.cache, "list-from.json");
+  return path15.join(pool.paths.cache, "list-from.json");
 }
 var LIST_CACHE_VERSION = 2;
 function listCacheKey(config) {
@@ -4416,7 +5239,7 @@ function listCacheKey(config) {
 }
 function readCache(pool) {
   try {
-    const value = JSON.parse(readFileSync3(cacheFile(pool), "utf8"));
+    const value = JSON.parse(readFileSync5(cacheFile(pool), "utf8"));
     if (value.key !== listCacheKey(pool.config) || !Array.isArray(value.entries)) return void 0;
     return value;
   } catch {
@@ -4425,16 +5248,16 @@ function readCache(pool) {
 }
 function writeCache(pool, entries) {
   try {
-    mkdirSync8(pool.paths.cache, { recursive: true });
+    mkdirSync10(pool.paths.cache, { recursive: true });
     const value = { at: pool.now().toISOString(), key: listCacheKey(pool.config), entries };
-    writeFileSync6(cacheFile(pool), `${JSON.stringify(value, null, 2)}
+    writeFileSync7(cacheFile(pool), `${JSON.stringify(value, null, 2)}
 `, "utf8");
   } catch {
   }
 }
 async function listRemoteBranches(pool) {
   const dirs = pool.config.branches.listFrom;
-  if (dirs.length === 0 || !existsSync10(path14.join(pool.root, "pool.toml"))) return { entries: [], cached: false };
+  if (dirs.length === 0 || !existsSync10(path15.join(pool.root, "pool.toml"))) return { entries: [], cached: false };
   const cache = readCache(pool);
   if (cache && pool.now().getTime() - Date.parse(cache.at) < LIST_CACHE_MS) return { entries: cache.entries, cached: true };
   const ctx = readOnlyCtx(pool, LIST_TIMEOUT_MS);
@@ -4554,7 +5377,7 @@ async function status2(pool) {
   let skipped = 0;
   for (const slot of view.slots) {
     const left = deadline - Date.now();
-    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync10(path14.join(slot.path, ".svn"))) {
+    if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync10(path15.join(slot.path, ".svn"))) {
       if (left < 500) skipped += 1;
       changes.set(slot.id, null);
       continue;
@@ -4597,7 +5420,7 @@ async function run(toolId, rawParams, ctx) {
     throw new UsageError(`ttl \u4E0D\u5408\u6CD5\uFF1A${params.ttl}\uFF08\u5982 12h\u30011d\u30013d\u30011w \u6216 forever\uFF09`);
   }
   if (toolId === "hold" || toolId === "unhold") checkHoldId(params.holdId);
-  if (toolId === "hold" && !path15.isAbsolute(String(params.expectedPath))) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${params.expectedPath}`);
+  if (toolId === "hold" && !path16.isAbsolute(String(params.expectedPath))) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${params.expectedPath}`);
   if (toolId === "unhold" && params.confirmClosed !== true) throw new UsageError("\u89E3\u9664\u4FDD\u62A4\u524D\u987B\u786E\u8BA4\u7528\u5230\u8BE5\u5DE5\u4F5C\u526F\u672C\u7684\u5E94\u7528\u5DF2\u5173\u95ED\uFF08--confirm-closed\uFF09");
   if (ctx.dryRun) return { detail: dryRun(tool.displayName, toolId, params, ctx), code: 0 };
   switch (toolId) {
@@ -4694,7 +5517,7 @@ async function runRefresh(ctx) {
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
 async function runCaptureSparse(params, ctx) {
-  const wc = path15.resolve(ctx.cwd, String(params.path));
+  const wc = path16.resolve(ctx.cwd, String(params.path));
   const sctx = { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, logFile: ctx.logFile, abortSignal: ctx.abortSignal, onProgress: ctx.onProgress };
   const info = await svnInfo(sctx, wc);
   if (!info) throw new UsageError(`\u4E0D\u662F svn \u5DE5\u4F5C\u526F\u672C\uFF1A${wc}`);
@@ -4708,9 +5531,9 @@ async function runCaptureSparse(params, ctx) {
 function dryRun(displayName, toolId, params, ctx) {
   const head = `dry-run: ${displayName} ${JSON.stringify(params)}`;
   if (toolId === "capture-sparse") return `${head}
-\u8BFB\u53D6 ${path15.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
-  const root = path15.resolve(ctx.cwd);
-  if (!existsSync11(path15.join(root, CONFIG_FILE))) return head;
+\u8BFB\u53D6 ${path16.resolve(ctx.cwd, String(params.path))} \u5404\u76EE\u5F55\u7684 depth\uFF0C\u5BFC\u51FA [sparse] \u914D\u7F6E\uFF1B\u53EA\u8BFB`;
+  const root = path16.resolve(ctx.cwd);
+  if (!existsSync11(path16.join(root, CONFIG_FILE))) return head;
   const config = loadConfig(root);
   const lines = [head, `\u6C60\u6839 ${root}\uFF0C\u6700\u591A ${config.maxSlots} \u4E2A\u69FD\u4F4D`];
   if (toolId === "acquire" || toolId === "refresh") {
