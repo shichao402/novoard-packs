@@ -31,20 +31,26 @@ keys = ["guid", "timeCreated"]
 [[rule]]
 id = "local-missing"
 when = "local-only-missing"
+
+[[rule]]
+id = "blueprint"
+when = "any"
+paths = ["Project/RawAssets/Blueprint/**/*.gl"]
 ```
 
 - 路径归属按最长前缀，按路径段匹配：`X86_64/GameCore.stable` 不包含 `X86_64/GameCore.stable.meta`。Windows 上不区分大小写。
 - 同一路径不能出现在两个类别里；`always` 与 `optional` 不能重叠；引用未定义的类别、未知字段、`version` 不是 1 都按错误报出。
-- `paths` 是 glob：`*` 不跨目录，`**` 跨目录，不含 `/` 的模式只匹配文件名。不写 `paths` 表示任何路径。
+- `paths` 是 glob：`*` 不跨目录，`**` 跨目录，不含 `/` 的模式只匹配文件名。不写 `paths` 表示任何路径（`any` 除外，它必须写 `paths`）。
 - 规则按顺序判定，命中第一条即取远端。
 
-三种判定：
+四种判定：
 
 | when | 取远端的条件 |
 | --- | --- |
 | `local-equals-incoming` | 本地版本与远端版本逐字节相同。文本冲突比较 `.mine` 与新基线；树冲突（如远端新增撞上未纳管文件）从仓库导出远端一侧比较 |
 | `yaml-keys-only` | 两边是文本，去掉 `keys` 列出的顶层键（行首无缩进的 `key:`）后逐行相同；换行风格、BOM、末尾空行不算差异 |
 | `local-only-missing` | 树冲突，本地一侧只剩缺失或已删除的条目，磁盘上没有内容，下面也没有属性改动或未纳管文件 |
+| `any` | 路径命中 `paths` 即取远端，不比较内容。本地版本照常进存档（文本冲突存 `.mine`，即不含冲突标记的本地版本），需要时从存档恢复。用于"冲突了就以仓库为准、本地改动可事后找回"的文件，比如蓝图 |
 
 ## 处理什么
 

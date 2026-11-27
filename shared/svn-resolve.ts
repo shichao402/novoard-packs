@@ -517,6 +517,7 @@ async function rulePasses(
   items: Item[],
   pairOf: (v: Victim) => Promise<{ local: Buffer; incoming: Buffer } | undefined>,
 ): Promise<boolean> {
+  if (rule.when === "any") return true;
   if (rule.when === "local-equals-incoming") {
     const pair = await pairOf(v);
     return Boolean(pair && pair.local.equals(pair.incoming));

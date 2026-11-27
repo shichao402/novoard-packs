@@ -7,11 +7,12 @@
  *   [categories]           类别名 = 相对工程根的路径数组，"/" 结尾表示目录
  *   [discard]              always = 总是丢弃本地改动的类别；optional = 使用方可开启的类别
  *   [[rule]]               id、when、可选 paths（glob）、keys（yaml-keys-only 用）
+ *                          when = any 表示路径命中即存档本地后取远端，必须写 paths
  */
 import { readFileSync } from "node:fs";
 import { parse, TomlError } from "smol-toml";
 
-export const RULE_KINDS = ["local-equals-incoming", "yaml-keys-only", "local-only-missing"] as const;
+export const RULE_KINDS = ["local-equals-incoming", "yaml-keys-only", "local-only-missing", "any"] as const;
 export type RuleKind = (typeof RULE_KINDS)[number];
 
 export type SvnRule = {
@@ -111,6 +112,7 @@ export function parseSvnRules(text: string, file = "svn-rules.toml"): SvnRules {
     const keys = strList(`rule ${id} 的 keys`, r.keys ?? []);
     if (when === "yaml-keys-only" && keys.length === 0) fail(`rule ${id} 是 yaml-keys-only，必须给 keys`);
     if (when !== "yaml-keys-only" && keys.length > 0) fail(`rule ${id} 只有 yaml-keys-only 才能写 keys`);
+    if (when === "any" && paths.length === 0) fail(`rule ${id} 是 any（无条件取远端），必须给 paths 限定范围`);
     for (const k of keys) if (!/^[A-Za-z_][\w-]*$/.test(k)) fail(`rule ${id} 的 key ${k} 不是合法的 YAML 键`);
     const matchers = paths.map((p) => {
       const norm = p.replace(/\\/g, "/");

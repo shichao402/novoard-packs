@@ -31,6 +31,10 @@ keys = ["guid", "timeCreated"]
 [[rule]]
 id = "local-missing"
 when = "local-only-missing"
+[[rule]]
+id = "blueprint"
+when = "any"
+paths = ["bp/**/*.gl"]
 `;
 
 describe("规则文件解析", () => {
@@ -82,6 +86,7 @@ describe("规则文件解析", () => {
     ['version = 1\n[categories]\na = ["x"]\n[discard]\nalways = ["a"]\noptional = ["a"]', /不能同时/],
     ['version = 1\n[[rule]]\nid = "r"\nwhen = "magic"', /when 只能是/],
     ['version = 1\n[[rule]]\nid = "r"\nwhen = "yaml-keys-only"', /必须给 keys/],
+    ['version = 1\n[[rule]]\nid = "r"\nwhen = "any"', /必须给 paths/],
     ['version = 1\n[[rule]]\nid = "r"\nwhen = "local-equals-incoming"\nkeys = ["guid"]', /只有 yaml-keys-only/],
     ['version = 1\n[[rule]]\nid = "r"\nwhen = "local-only-missing"\n[[rule]]\nid = "r"\nwhen = "local-only-missing"', /重复/],
     ["version = 1\n[categories", /TOML 语法错误/],
@@ -242,9 +247,9 @@ describe.skipIf(!hasSvn)("按规则处理冲突（真实 SVN）", () => {
     url = pathToFileURL(repo).href;
     const seed = path.join(base, "seed");
     const b1 = path.join(seed, "branches/b1");
-    for (const dir of ["gen", "src", "art", "Assets"]) mkdirSync(path.join(b1, dir), { recursive: true });
+    for (const dir of ["gen", "src", "art", "Assets", "bp/v2"]) mkdirSync(path.join(b1, dir), { recursive: true });
     mkdirSync(path.join(seed, "branches/b2/gen"), { recursive: true });
-    for (const rel of ["gen/out.bin", "src/source.cpp", "src/gone.cpp", "art/tex.txt", "art/icon@2x.txt"]) writeFileSync(path.join(b1, rel), "base\n");
+    for (const rel of ["gen/out.bin", "src/source.cpp", "src/gone.cpp", "art/tex.txt", "art/icon@2x.txt", "bp/v2/a.gl"]) writeFileSync(path.join(b1, rel), "base\n");
     writeFileSync(path.join(b1, "Assets/a.meta"), META_BASE);
     writeFileSync(path.join(seed, "branches/b2/gen/out.bin"), "b2\n");
     sh("svn", ["import", seed, url, "-m", "seed"]);
@@ -338,6 +343,18 @@ describe.skipIf(!hasSvn)("按规则处理冲突（真实 SVN）", () => {
     expect(blocked.code).not.toBe(0);
     expect(blocked.detail).toContain("Assets/a.meta");
     expect(state().phase).toBe("blocked");
+  }, 120_000);
+
+  it("蓝图按 any 规则：冲突先存档本地版本再取远端", async () => {
+    textConflict("bp/v2/a.gl", "local bp\n", "remote bp\n");
+    const result = await refresh();
+    expect(result.code).toBe(0);
+    expect(read("bp/v2/a.gl")).toBe("remote bp\n");
+    expect(dirty()).toEqual([]);
+    const [dir] = archives();
+    expect(readFileSync(path.join(dir, "files", "bp", "v2", "a.gl"), "utf8")).toBe("local bp\n");
+    const runs = JSON.parse(readFileSync(path.join(dir, "rules.json"), "utf8")) as { entries: { path: string; action: string; rule: string }[] }[];
+    expect(runs.flatMap((r) => r.entries)).toContainEqual(expect.objectContaining({ path: "bp/v2/a.gl", action: "theirs", rule: "blueprint" }));
   }, 120_000);
 
   it("本地已删、远端修改：本地没有内容可丢，按 local-missing 取远端", async () => {

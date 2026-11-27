@@ -2339,7 +2339,7 @@ function toRelativePatch(diff, wc) {
 
 // shared/svn-rules.ts
 import { readFileSync as readFileSync2 } from "node:fs";
-var RULE_KINDS = ["local-equals-incoming", "yaml-keys-only", "local-only-missing"];
+var RULE_KINDS = ["local-equals-incoming", "yaml-keys-only", "local-only-missing", "any"];
 var SvnRulesError = class extends Error {
 };
 var TOP_KEYS2 = /* @__PURE__ */ new Set(["version", "categories", "discard", "rule"]);
@@ -2413,6 +2413,7 @@ function parseSvnRules(text, file = "svn-rules.toml") {
     const keys = strList(`rule ${id} \u7684 keys`, r.keys ?? []);
     if (when === "yaml-keys-only" && keys.length === 0) fail(`rule ${id} \u662F yaml-keys-only\uFF0C\u5FC5\u987B\u7ED9 keys`);
     if (when !== "yaml-keys-only" && keys.length > 0) fail(`rule ${id} \u53EA\u6709 yaml-keys-only \u624D\u80FD\u5199 keys`);
+    if (when === "any" && paths.length === 0) fail(`rule ${id} \u662F any\uFF08\u65E0\u6761\u4EF6\u53D6\u8FDC\u7AEF\uFF09\uFF0C\u5FC5\u987B\u7ED9 paths \u9650\u5B9A\u8303\u56F4`);
     for (const k of keys) if (!/^[A-Za-z_][\w-]*$/.test(k)) fail(`rule ${id} \u7684 key ${k} \u4E0D\u662F\u5408\u6CD5\u7684 YAML \u952E`);
     const matchers = paths.map((p) => {
       const norm = p.replace(/\\/g, "/");
@@ -3071,6 +3072,7 @@ async function contentPair(ctx, v) {
   return void 0;
 }
 async function rulePasses(ctx, rule, v, items, pairOf) {
+  if (rule.when === "any") return true;
   if (rule.when === "local-equals-incoming") {
     const pair = await pairOf(v);
     return Boolean(pair && pair.local.equals(pair.incoming));
