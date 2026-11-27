@@ -166,6 +166,16 @@ describe("池配置 [svnRules]", () => {
 });
 
 const hasSvn = ["svn", "svnadmin"].every((cmd) => spawnSync(cmd, ["--version", "--quiet"]).status === 0);
+/** 文件系统是否不区分大小写（Windows、默认 macOS）：只有这样仓库里只差大小写的两个文件才会撞名。 */
+const caseInsensitiveFs = ((): boolean => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "wcp-case-"));
+  try {
+    writeFileSync(path.join(dir, "Probe"), "");
+    return existsSync(path.join(dir, "probe"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
 function sh(command: string, args: string[]): string {
   const r = spawnSync(command, args, { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`${command} ${args.join(" ")}: ${r.stderr}`);
@@ -388,6 +398,44 @@ describe.skipIf(!hasSvn)("按规则处理冲突（真实 SVN）", () => {
     expect(read("gen/out.bin")).toBe("remote\n");
     expect(state().phase).toBe("ready");
     expect(state().blockedReason).toBeUndefined();
+    expect(state().op).toBeUndefined();
+  }, 120_000);
+
+  it.skipIf(!caseInsensitiveFs)("仓库里只差大小写的两个文件：保留磁盘上的那个并提示，不来回覆盖", async () => {
+    const content: Record<string, string> = { "Show.txt": "UPPER\n", "show.txt": "lower\n" };
+    for (const [i, [name, text]] of Object.entries(content).entries()) {
+      const src = path.join(base, `import-${i}`);
+      writeFileSync(src, text);
+      sh("svn", ["import", src, `${url}/branches/b1/art/${name}`, "-m", name]);
+    }
+    // 两个都拉下来后只能留一个，另一个显示缺失
+    sh("svn", ["update", wc]);
+    expect(dirty()).toEqual([expect.stringMatching(/^!\s+.*show\.txt$/i)]);
+    config(["art"]);
+    const onDisk = (): string => {
+      const names = readdirSync(file("art")).filter((n) => n.toLowerCase() === "show.txt");
+      expect(names).toHaveLength(1);
+      return names[0];
+    };
+
+    const result = await refresh();
+    expect(result.code).toBe(0);
+    expect(result.detail).toContain("只差大小写");
+    expect(state().phase).toBe("ready");
+    const kept = onDisk();
+    expect(read(`art/${kept}`)).toBe(content[kept]);
+
+    // 之前来回覆盖留下的现场：留下的文件被写成了另一个的内容，再按整个 art/ revert 就会再覆盖一次
+    const other = kept === "Show.txt" ? "show.txt" : "Show.txt";
+    writeFileSync(file(`art/${kept}`), content[other]);
+    await mutate(poolPaths(root), (s) => { s.slots[0].phase = "blocked"; s.slots[0].blockedReason = "case clash"; });
+    const reviewed = await gc();
+    expect(reviewed.code).toBe(0);
+    expect(reviewed.detail).toContain("解除阻塞");
+    expect(reviewed.detail).toContain("只差大小写");
+    expect(onDisk()).toBe(kept);
+    expect(read(`art/${kept}`)).toBe(content[kept]);
+    expect(state().phase).toBe("ready");
     expect(state().op).toBeUndefined();
   }, 120_000);
 

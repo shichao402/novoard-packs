@@ -1690,7 +1690,7 @@ var manifest = {
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync9, lstatSync as lstatSync3, mkdirSync as mkdirSync9, readdirSync, realpathSync as realpathSync3, rmSync as rmSync4, statSync as statSync5 } from "node:fs";
+import { existsSync as existsSync9, lstatSync as lstatSync3, mkdirSync as mkdirSync9, readdirSync as readdirSync2, realpathSync as realpathSync3, rmSync as rmSync4, statSync as statSync5 } from "node:fs";
 import path14 from "node:path";
 
 // shared/occupants.ts
@@ -2310,7 +2310,7 @@ function tailLines(text, count = 8) {
 }
 
 // shared/svn-resolve.ts
-import { cpSync, existsSync as existsSync5, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync2, readFileSync as readFileSync3, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3, appendFileSync as appendFileSync2 } from "node:fs";
+import { cpSync, existsSync as existsSync5, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync2, readdirSync, readFileSync as readFileSync3, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3, appendFileSync as appendFileSync2 } from "node:fs";
 import os3 from "node:os";
 import path8 from "node:path";
 
@@ -2738,6 +2738,10 @@ function summarizeRules(outcome) {
   if (parts.length === 0) return "";
   return `\u89C4\u5219\u5904\u7406\uFF1A${parts.join("\u3001")}${outcome.archiveDir ? `\uFF08\u5B58\u6863 ${outcome.archiveDir}\uFF09` : ""}`;
 }
+var RULE_HINT = "\u89C4\u5219\u63D0\u793A\uFF1A";
+function reportRules(outcome) {
+  return [summarizeRules(outcome), ...outcome.notes.filter((n) => n.startsWith(RULE_HINT))].filter(Boolean).join("\uFF1B");
+}
 var DIRTY = /* @__PURE__ */ new Set(["modified", "added", "deleted", "replaced", "missing"]);
 var ACTION_LABEL = { add: "\u65B0\u589E", delete: "\u5220\u9664", edit: "\u4FEE\u6539", replace: "\u66FF\u6362" };
 var REASON_LABEL = {
@@ -2890,9 +2894,14 @@ async function planRound(ctx, items) {
     }
   }
   const victimRels = victims.map((v) => v.rel);
+  const clashes = caseClashes(ctx, items);
+  for (const [rel, other] of clashes) {
+    plan.notes.push(`${RULE_HINT}${rel} \u4E0E ${other} \u5728\u4ED3\u5E93\u91CC\u53EA\u5DEE\u5927\u5C0F\u5199\uFF0C\u672C\u673A\u6587\u4EF6\u7CFB\u7EDF\u53EA\u80FD\u653E\u4E00\u4E2A\uFF0C\u4FDD\u7559\u4E86\u78C1\u76D8\u4E0A\u7684 ${path8.posix.basename(other)}\uFF0C${path8.posix.basename(rel)} \u4F1A\u4E00\u76F4\u663E\u793A\u7F3A\u5931\uFF0C\u9700\u5728\u4ED3\u5E93\u91CC\u5220\u6389\u5176\u4E2D\u4E00\u4E2A`);
+  }
   const groups = /* @__PURE__ */ new Map();
   for (const x of items) {
     if (!isDirty(x.item) || isVictim(x.item) || x.item.item === "obstructed") continue;
+    if (clashes.has(x.rel)) continue;
     if (victimRels.some((v) => isUnder(x.rel, v))) continue;
     const cat = categoryOf(o.rules, x.rel);
     if (!cat || !discard.has(cat.name)) continue;
@@ -2902,7 +2911,8 @@ async function planRound(ctx, items) {
   }
   for (const [prefix, group] of groups) {
     const archive = !o.rules.always.includes(group.cat);
-    if (plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path))) {
+    const pinned = plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path)) || [...clashes.keys()].some((rel) => isUnder(rel, prefix));
+    if (pinned) {
       for (const entry of group.entries) plan.reverts.push({ target: entry.path, entries: [entry], archive });
     } else {
       plan.reverts.push({ target: prefix, entries: group.entries, archive });
@@ -2914,7 +2924,7 @@ async function planRound(ctx, items) {
     if (cat && discard.has(cat.name)) {
       plan.switches.push({ rel: x.rel, entry: { path: x.rel, what: "switched \u5230\u5176\u4ED6 URL", category: cat.name, rule: `discard:${cat.name}`, action: "switch-back" } });
     } else {
-      plan.notes.push(`${x.rel} \u88AB switch \u5230\u5176\u4ED6 URL\uFF0C\u4E0D\u5C5E\u4E8E\u53EF\u4E22\u5F03\u7C7B\u522B\uFF0C\u4FDD\u6301\u4E0D\u52A8`);
+      plan.notes.push(`${RULE_HINT}${x.rel} \u88AB switch \u5230\u5176\u4ED6 URL\uFF0C\u4E0D\u5C5E\u4E8E\u53EF\u4E22\u5F03\u7C7B\u522B\uFF0C\u4FDD\u6301\u4E0D\u52A8`);
     }
   }
   return plan;
@@ -2922,6 +2932,34 @@ async function planRound(ctx, items) {
 function localWhat(it) {
   const label = { modified: "\u672C\u5730\u4FEE\u6539", added: "\u672C\u5730\u65B0\u589E", deleted: "\u672C\u5730\u5220\u9664", replaced: "\u672C\u5730\u66FF\u6362", missing: "\u672C\u5730\u7F3A\u5931" };
   return label[it.item] ?? (it.props === "modified" ? "\u672C\u5730\u5C5E\u6027\u4FEE\u6539" : it.item);
+}
+function caseClashes(ctx, items) {
+  const out = /* @__PURE__ */ new Map();
+  const unversioned = new Set(items.filter((x) => x.item.item === "unversioned").map((x) => x.rel.toLowerCase()));
+  const listings = /* @__PURE__ */ new Map();
+  for (const x of items) {
+    if (x.item.item !== "missing" || x.rel === ".") continue;
+    const abs2 = ctx.abs(x.rel);
+    if (!existsSync5(abs2)) continue;
+    const parentRel = path8.posix.dirname(x.rel);
+    const parent = path8.dirname(abs2);
+    let names = listings.get(parent);
+    if (!names) {
+      try {
+        names = readdirSync(parent);
+      } catch {
+        names = [];
+      }
+      listings.set(parent, names);
+    }
+    const base = path8.posix.basename(x.rel);
+    const actual = names.find((n) => n !== base && n.toLowerCase() === base.toLowerCase());
+    if (!actual) continue;
+    const other = parentRel === "." ? actual : `${parentRel}/${actual}`;
+    if (unversioned.has(other.toLowerCase())) continue;
+    out.set(x.rel, other);
+  }
+  return out;
 }
 async function readVictims(ctx, list) {
   const infos = /* @__PURE__ */ new Map();
@@ -4686,7 +4724,7 @@ async function switchFlow(pool, claimed, branch, url, notes) {
       notes.push(`${claimed.id}\uFF08${from}\uFF09\u6709\u9700\u8981\u4EBA\u5904\u7406\u7684\u95EE\u9898\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E\uFF1A${reason}`);
       return "blocked";
     }
-    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    const ruleNote = ruled ? reportRules(ruled) : "";
     if (ruleNote) notes.push(`${from} ${ruleNote}`);
     const archived = await archiveChanges(sctx, pool.paths, wc, from, pool.now());
     if (archived.blocked) {
@@ -4714,7 +4752,7 @@ async function switchFlow(pool, claimed, branch, url, notes) {
     let leftover;
     if (ruled) {
       if (ruled.blocked.length > 0) leftover = describeBlocked(ruled);
-      const ruleNote = summarizeRules(ruled);
+      const ruleNote = reportRules(ruled);
       if (ruleNote) notes.push(`${branch} ${ruleNote}`);
     } else {
       const st = await svnStatus(sctx, wc);
@@ -4890,12 +4928,14 @@ async function gc2(pool) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A\u5DE5\u4F5C\u526F\u672C\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u4FDD\u7559\u963B\u585E\u4E0E\u8BB0\u5F55`);
         continue;
       }
+      let ruleNote = "";
       if (poolRules(pool)) {
         const reviewed = await reviewByRules(pool, slot, wc, info.url);
-        if (reviewed) {
-          report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${reviewed}`);
+        if (reviewed.blocked) {
+          report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${reviewed.blocked}`);
           continue;
         }
+        ruleNote = reviewed.note ?? "";
       }
       const st = await svnStatus(sctx, wc);
       if (st.problems.length > 0 || st.wcLocked) {
@@ -4920,7 +4960,7 @@ async function gc2(pool) {
       });
       if (!outcome) continue;
       if ("blocked" in outcome) report.blocked.push(`${slot.id} (\u672A\u5B9A)\uFF1A${outcome.blocked}`);
-      else report.unblocked.push(`${slot.id} ${outcome.branch || "(\u672A\u5B9A)"}`);
+      else report.unblocked.push(`${slot.id} ${outcome.branch || "(\u672A\u5B9A)"}${ruleNote ? `\uFF1A${ruleNote}` : ""}`);
     } catch (error) {
       if (error instanceof Cancelled) throw error;
       report.errors.push(`${slot.id} \u590D\u67E5\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`);
@@ -4966,7 +5006,7 @@ async function reviewByRules(pool, slot, wc, url) {
     s.op = { kind: "update", target: s.branch, pid: process.pid, at: now.toISOString() };
     return void 0;
   });
-  if (claim) return `${claim}\uFF1A${slot.blockedReason ?? ""}`;
+  if (claim) return { blocked: `${claim}\uFF1A${slot.blockedReason ?? ""}` };
   const release2 = async (patch) => {
     await mutate(pool.paths, (state) => {
       const s = state.slots.find((x) => x.id === slot.id);
@@ -4976,19 +5016,19 @@ async function reviewByRules(pool, slot, wc, url) {
   try {
     if (await svnBusy(wc, pool.ctx.abortSignal)) {
       await release2({});
-      return `\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\uFF0C\u4E0B\u6B21\u518D\u590D\u67E5\uFF1A${slot.blockedReason ?? ""}`;
+      return { blocked: `\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\uFF0C\u4E0B\u6B21\u518D\u590D\u67E5\uFF1A${slot.blockedReason ?? ""}` };
     }
     const branch = slot.branch || branchFromUrl(pool.config, url) || "";
     const ruled = await runPoolRules(pool, wc, branch, "\u590D\u67E5");
     if (ruled && ruled.blocked.length > 0) {
       const reason = shortReason(describeBlocked(ruled));
       await release2({ blockedReason: reason });
-      return reason;
+      return { blocked: reason };
     }
     await release2({});
-    const note = ruled ? summarizeRules(ruled) : "";
+    const note = ruled ? reportRules(ruled) : "";
     if (note) appendLog(pool.ctx.logFile, `[workingCopyPool] ${slot.id} ${note}`);
-    return void 0;
+    return note ? { note } : {};
   } catch (error) {
     await release2({});
     throw error;
@@ -5026,7 +5066,7 @@ async function retireSlot(pool, claimed) {
       await back({ phase: "blocked", blockedReason: reason });
       return `${claimed.id} \u6709\u9700\u8981\u4EBA\u5904\u7406\u7684\u95EE\u9898\uFF0C\u6682\u4E0D\u5220\u9664\uFF1A${reason}`;
     }
-    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    const ruleNote = ruled ? reportRules(ruled) : "";
     if (ruleNote) notes.push(ruleNote);
     const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(fail);
     if (archived.blocked) {
@@ -5061,7 +5101,7 @@ function syncLinks(pool) {
   }
   const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
   if (existsSync9(pool.paths.branch)) {
-    for (const name of readdirSync(pool.paths.branch)) {
+    for (const name of readdirSync2(pool.paths.branch)) {
       const link = path14.join(pool.paths.branch, name);
       if (!isLink(link)) continue;
       const target = linkTarget(link);
@@ -5093,10 +5133,10 @@ function prunePatches(pool) {
   const cutoff = pool.now().getTime() - pool.config.patchRetentionDays * 864e5;
   let removed = 0;
   if (!existsSync9(pool.paths.patches)) return 0;
-  for (const branch of readdirSync(pool.paths.patches)) {
+  for (const branch of readdirSync2(pool.paths.patches)) {
     const dir = path14.join(pool.paths.patches, branch);
     if (!statSync5(dir).isDirectory()) continue;
-    for (const stamp of readdirSync(dir)) {
+    for (const stamp of readdirSync2(dir)) {
       const entry = path14.join(dir, stamp);
       try {
         if (statSync5(entry).mtimeMs < cutoff) {
@@ -5107,7 +5147,7 @@ function prunePatches(pool) {
       }
     }
     try {
-      if (readdirSync(dir).length === 0) rmSync4(dir, { recursive: true, force: true });
+      if (readdirSync2(dir).length === 0) rmSync4(dir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -5177,7 +5217,7 @@ async function refreshOne(pool, branch) {
       if (behind !== void 0) slot.behind = behind;
     });
     const last = result.detail.split(/\r?\n/).filter(Boolean).pop() ?? "\u5B8C\u6210";
-    const ruleNote = result.detail.split("\uFF1B").filter((part) => part.includes("\u89C4\u5219\u5904\u7406")).join("\uFF1B");
+    const ruleNote = result.detail.split("\uFF1B").filter((part) => part.includes("\u89C4\u5219\u5904\u7406") || part.startsWith(RULE_HINT)).join("\uFF1B");
     return {
       branch,
       ok: true,

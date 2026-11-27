@@ -2277,7 +2277,7 @@ async function cleanupAfterInterrupt(args, options) {
 }
 
 // shared/svn-resolve.ts
-import { cpSync, existsSync as existsSync5, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync2, readFileSync as readFileSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3, appendFileSync as appendFileSync2 } from "node:fs";
+import { cpSync, existsSync as existsSync5, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync2, readdirSync, readFileSync as readFileSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3, appendFileSync as appendFileSync2 } from "node:fs";
 import os3 from "node:os";
 import path8 from "node:path";
 
@@ -2556,6 +2556,7 @@ function summarizeRules(outcome) {
   if (parts.length === 0) return "";
   return `\u89C4\u5219\u5904\u7406\uFF1A${parts.join("\u3001")}${outcome.archiveDir ? `\uFF08\u5B58\u6863 ${outcome.archiveDir}\uFF09` : ""}`;
 }
+var RULE_HINT = "\u89C4\u5219\u63D0\u793A\uFF1A";
 var DIRTY = /* @__PURE__ */ new Set(["modified", "added", "deleted", "replaced", "missing"]);
 var ACTION_LABEL = { add: "\u65B0\u589E", delete: "\u5220\u9664", edit: "\u4FEE\u6539", replace: "\u66FF\u6362" };
 var REASON_LABEL = {
@@ -2708,9 +2709,14 @@ async function planRound(ctx, items) {
     }
   }
   const victimRels = victims.map((v) => v.rel);
+  const clashes = caseClashes(ctx, items);
+  for (const [rel, other] of clashes) {
+    plan.notes.push(`${RULE_HINT}${rel} \u4E0E ${other} \u5728\u4ED3\u5E93\u91CC\u53EA\u5DEE\u5927\u5C0F\u5199\uFF0C\u672C\u673A\u6587\u4EF6\u7CFB\u7EDF\u53EA\u80FD\u653E\u4E00\u4E2A\uFF0C\u4FDD\u7559\u4E86\u78C1\u76D8\u4E0A\u7684 ${path8.posix.basename(other)}\uFF0C${path8.posix.basename(rel)} \u4F1A\u4E00\u76F4\u663E\u793A\u7F3A\u5931\uFF0C\u9700\u5728\u4ED3\u5E93\u91CC\u5220\u6389\u5176\u4E2D\u4E00\u4E2A`);
+  }
   const groups = /* @__PURE__ */ new Map();
   for (const x of items) {
     if (!isDirty(x.item) || isVictim(x.item) || x.item.item === "obstructed") continue;
+    if (clashes.has(x.rel)) continue;
     if (victimRels.some((v) => isUnder(x.rel, v))) continue;
     const cat = categoryOf(o.rules, x.rel);
     if (!cat || !discard.has(cat.name)) continue;
@@ -2720,7 +2726,8 @@ async function planRound(ctx, items) {
   }
   for (const [prefix, group] of groups) {
     const archive = !o.rules.always.includes(group.cat);
-    if (plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path))) {
+    const pinned = plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path)) || [...clashes.keys()].some((rel) => isUnder(rel, prefix));
+    if (pinned) {
       for (const entry of group.entries) plan.reverts.push({ target: entry.path, entries: [entry], archive });
     } else {
       plan.reverts.push({ target: prefix, entries: group.entries, archive });
@@ -2732,7 +2739,7 @@ async function planRound(ctx, items) {
     if (cat && discard.has(cat.name)) {
       plan.switches.push({ rel: x.rel, entry: { path: x.rel, what: "switched \u5230\u5176\u4ED6 URL", category: cat.name, rule: `discard:${cat.name}`, action: "switch-back" } });
     } else {
-      plan.notes.push(`${x.rel} \u88AB switch \u5230\u5176\u4ED6 URL\uFF0C\u4E0D\u5C5E\u4E8E\u53EF\u4E22\u5F03\u7C7B\u522B\uFF0C\u4FDD\u6301\u4E0D\u52A8`);
+      plan.notes.push(`${RULE_HINT}${x.rel} \u88AB switch \u5230\u5176\u4ED6 URL\uFF0C\u4E0D\u5C5E\u4E8E\u53EF\u4E22\u5F03\u7C7B\u522B\uFF0C\u4FDD\u6301\u4E0D\u52A8`);
     }
   }
   return plan;
@@ -2740,6 +2747,34 @@ async function planRound(ctx, items) {
 function localWhat(it) {
   const label = { modified: "\u672C\u5730\u4FEE\u6539", added: "\u672C\u5730\u65B0\u589E", deleted: "\u672C\u5730\u5220\u9664", replaced: "\u672C\u5730\u66FF\u6362", missing: "\u672C\u5730\u7F3A\u5931" };
   return label[it.item] ?? (it.props === "modified" ? "\u672C\u5730\u5C5E\u6027\u4FEE\u6539" : it.item);
+}
+function caseClashes(ctx, items) {
+  const out = /* @__PURE__ */ new Map();
+  const unversioned = new Set(items.filter((x) => x.item.item === "unversioned").map((x) => x.rel.toLowerCase()));
+  const listings = /* @__PURE__ */ new Map();
+  for (const x of items) {
+    if (x.item.item !== "missing" || x.rel === ".") continue;
+    const abs = ctx.abs(x.rel);
+    if (!existsSync5(abs)) continue;
+    const parentRel = path8.posix.dirname(x.rel);
+    const parent = path8.dirname(abs);
+    let names = listings.get(parent);
+    if (!names) {
+      try {
+        names = readdirSync(parent);
+      } catch {
+        names = [];
+      }
+      listings.set(parent, names);
+    }
+    const base = path8.posix.basename(x.rel);
+    const actual = names.find((n) => n !== base && n.toLowerCase() === base.toLowerCase());
+    if (!actual) continue;
+    const other = parentRel === "." ? actual : `${parentRel}/${actual}`;
+    if (unversioned.has(other.toLowerCase())) continue;
+    out.set(x.rel, other);
+  }
+  return out;
 }
 async function readVictims(ctx, list) {
   const infos = /* @__PURE__ */ new Map();

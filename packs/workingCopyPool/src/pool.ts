@@ -7,7 +7,7 @@ import path from "node:path";
 import { UsageError } from "../../../shared/cli";
 import { prepareExclusiveAccess } from "../../../shared/occupants";
 import { appendLog } from "../../../shared/svn-run";
-import { applySvnRules, describeBlocked, RulesBlockedError, summarizeRules, type RulesOutcome } from "../../../shared/svn-resolve";
+import { applySvnRules, describeBlocked, reportRules, RULE_HINT, RulesBlockedError, type RulesOutcome } from "../../../shared/svn-resolve";
 import { discardSet, loadSvnRules, type SvnRules } from "../../../shared/svn-rules";
 import { svnCheckAndUpdate } from "../../../shared/svn-update";
 import { displayTime } from "../../../shared/time";
@@ -629,7 +629,7 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
       notes.push(`${claimed.id}（${from}）有需要人处理的问题，已标为阻塞：${reason}`);
       return "blocked";
     }
-    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    const ruleNote = ruled ? reportRules(ruled) : "";
     if (ruleNote) notes.push(`${from} ${ruleNote}`);
     const archived = await archiveChanges(sctx, pool.paths, wc, from, pool.now());
     if (archived.blocked) {
@@ -660,7 +660,7 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
     let leftover: string | undefined;
     if (ruled) {
       if (ruled.blocked.length > 0) leftover = describeBlocked(ruled);
-      const ruleNote = summarizeRules(ruled);
+      const ruleNote = reportRules(ruled);
       if (ruleNote) notes.push(`${branch} ${ruleNote}`);
     } else {
       const st = await svnStatus(sctx, wc);
@@ -868,12 +868,14 @@ export async function gc(pool: Pool): Promise<GcReport> {
         report.blocked.push(`${slot.id} ${slot.branch}：工作副本不可访问，保留阻塞与记录`);
         continue;
       }
+      let ruleNote = "";
       if (poolRules(pool)) {
         const reviewed = await reviewByRules(pool, slot, wc, info.url);
-        if (reviewed) {
-          report.blocked.push(`${slot.id} ${slot.branch}：${reviewed}`);
+        if (reviewed.blocked) {
+          report.blocked.push(`${slot.id} ${slot.branch}：${reviewed.blocked}`);
           continue;
         }
+        ruleNote = reviewed.note ?? "";
       }
       const st = await svnStatus(sctx, wc);
       if (st.problems.length > 0 || st.wcLocked) {
@@ -899,7 +901,7 @@ export async function gc(pool: Pool): Promise<GcReport> {
       });
       if (!outcome) continue;
       if ("blocked" in outcome) report.blocked.push(`${slot.id} (未定)：${outcome.blocked}`);
-      else report.unblocked.push(`${slot.id} ${outcome.branch || "(未定)"}`);
+      else report.unblocked.push(`${slot.id} ${outcome.branch || "(未定)"}${ruleNote ? `：${ruleNote}` : ""}`);
     } catch (error) {
       if (error instanceof Cancelled) throw error;
       report.errors.push(`${slot.id} 复查失败：${error instanceof Error ? error.message : String(error)}`);
@@ -942,9 +944,9 @@ export async function gc(pool: Pool): Promise<GcReport> {
 
 /**
  * gc 复查：占住槽位（op=update）按规则处理一次，再交还。
- * 返回仍要阻塞的原因；返回 undefined 表示规则处理完了，交给后面的常规复查判断能否解除阻塞。
+ * blocked 是仍要阻塞的原因；没有 blocked 表示规则处理完了，交给后面的常规复查判断能否解除阻塞，note 是处理摘要和提示。
  */
-async function reviewByRules(pool: Pool, slot: Slot, wc: string, url: string): Promise<string | undefined> {
+async function reviewByRules(pool: Pool, slot: Slot, wc: string, url: string): Promise<{ blocked?: string; note?: string }> {
   const now = pool.now();
   const claim = await mutate(pool.paths, (state) => {
     const s = state.slots.find((x) => x.id === slot.id);
@@ -955,7 +957,7 @@ async function reviewByRules(pool: Pool, slot: Slot, wc: string, url: string): P
     s.op = { kind: "update", target: s.branch, pid: process.pid, at: now.toISOString() };
     return undefined;
   });
-  if (claim) return `${claim}：${slot.blockedReason ?? ""}`;
+  if (claim) return { blocked: `${claim}：${slot.blockedReason ?? ""}` };
   const release = async (patch: Partial<Slot>): Promise<void> => {
     await mutate(pool.paths, (state) => {
       const s = state.slots.find((x) => x.id === slot.id);
@@ -965,19 +967,19 @@ async function reviewByRules(pool: Pool, slot: Slot, wc: string, url: string): P
   try {
     if (await svnBusy(wc, pool.ctx.abortSignal)) {
       await release({});
-      return `有 SVN 进程正在处理，下次再复查：${slot.blockedReason ?? ""}`;
+      return { blocked: `有 SVN 进程正在处理，下次再复查：${slot.blockedReason ?? ""}` };
     }
     const branch = slot.branch || branchFromUrl(pool.config, url) || "";
     const ruled = await runPoolRules(pool, wc, branch, "复查");
     if (ruled && ruled.blocked.length > 0) {
       const reason = shortReason(describeBlocked(ruled));
       await release({ blockedReason: reason });
-      return reason;
+      return { blocked: reason };
     }
     await release({});
-    const note = ruled ? summarizeRules(ruled) : "";
+    const note = ruled ? reportRules(ruled) : "";
     if (note) appendLog(pool.ctx.logFile, `[workingCopyPool] ${slot.id} ${note}`);
-    return undefined;
+    return note ? { note } : {};
   } catch (error) {
     await release({});
     throw error;
@@ -1014,7 +1016,7 @@ async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
       await back({ phase: "blocked", blockedReason: reason });
       return `${claimed.id} 有需要人处理的问题，暂不删除：${reason}`;
     }
-    const ruleNote = ruled ? summarizeRules(ruled) : "";
+    const ruleNote = ruled ? reportRules(ruled) : "";
     if (ruleNote) notes.push(ruleNote);
     const archived = await archiveChanges(svnCtx(pool), pool.paths, wc, claimed.branch, pool.now()).catch(fail);
     if (archived.blocked) {
@@ -1183,7 +1185,7 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
       if (behind !== undefined) slot.behind = behind;
     });
     const last = result.detail.split(/\r?\n/).filter(Boolean).pop() ?? "完成";
-    const ruleNote = result.detail.split("；").filter((part) => part.includes("规则处理")).join("；");
+    const ruleNote = result.detail.split("；").filter((part) => part.includes("规则处理") || part.startsWith(RULE_HINT)).join("；");
     return {
       branch,
       ok: true,

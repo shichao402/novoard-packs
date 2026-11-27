@@ -8,7 +8,7 @@
  * - obstructed、工作副本锁（未允许 cleanup）→ 阻塞。
  * 总是丢弃的类别（generated）只记清单不拷内容；其余被处理的本地内容都进存档，可恢复。
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createArchiveDir, toRelativePatch } from "./svn-archive";
@@ -68,6 +68,14 @@ export function summarizeRules(outcome: RulesOutcome): string {
   ].filter(Boolean);
   if (parts.length === 0) return "";
   return `规则处理：${parts.join("、")}${outcome.archiveDir ? `（存档 ${outcome.archiveDir}）` : ""}`;
+}
+
+/** 需要人知道、但不阻塞的提示（如大小写撞名）都以这个前缀开头，调用方据此从 detail 里挑出来。 */
+export const RULE_HINT = "规则提示：";
+
+/** 结果 detail 用：处理摘要加上规则提示，用“；”连接。 */
+export function reportRules(outcome: RulesOutcome): string {
+  return [summarizeRules(outcome), ...outcome.notes.filter((n) => n.startsWith(RULE_HINT))].filter(Boolean).join("；");
 }
 
 export type ApplyRulesOptions = {
@@ -304,11 +312,16 @@ async function planRound(ctx: EngineCtx, items: Item[]): Promise<Plan> {
     }
   }
 
-  // 可丢弃类别里的普通受控改动：按类别前缀整体 revert；前缀下有阻塞条目时逐个 revert
+  // 可丢弃类别里的普通受控改动：按类别前缀整体 revert；前缀下有阻塞条目或大小写撞名时逐个 revert
   const victimRels = victims.map((v) => v.rel);
+  const clashes = caseClashes(ctx, items);
+  for (const [rel, other] of clashes) {
+    plan.notes.push(`${RULE_HINT}${rel} 与 ${other} 在仓库里只差大小写，本机文件系统只能放一个，保留了磁盘上的 ${path.posix.basename(other)}，${path.posix.basename(rel)} 会一直显示缺失，需在仓库里删掉其中一个`);
+  }
   const groups = new Map<string, { cat: string; entries: RuleEntry[] }>();
   for (const x of items) {
     if (!isDirty(x.item) || isVictim(x.item) || x.item.item === "obstructed") continue;
+    if (clashes.has(x.rel)) continue;
     if (victimRels.some((v) => isUnder(x.rel, v))) continue;
     const cat = categoryOf(o.rules, x.rel);
     if (!cat || !discard.has(cat.name)) continue;
@@ -318,7 +331,8 @@ async function planRound(ctx: EngineCtx, items: Item[]): Promise<Plan> {
   }
   for (const [prefix, group] of groups) {
     const archive = !o.rules.always.includes(group.cat);
-    if (plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path))) {
+    const pinned = plan.blocked.some((b) => isUnder(b.path, prefix) || isUnder(prefix, b.path)) || [...clashes.keys()].some((rel) => isUnder(rel, prefix));
+    if (pinned) {
       for (const entry of group.entries) plan.reverts.push({ target: entry.path, entries: [entry], archive });
     } else {
       plan.reverts.push({ target: prefix, entries: group.entries, archive });
@@ -331,7 +345,7 @@ async function planRound(ctx: EngineCtx, items: Item[]): Promise<Plan> {
     if (cat && discard.has(cat.name)) {
       plan.switches.push({ rel: x.rel, entry: { path: x.rel, what: "switched 到其他 URL", category: cat.name, rule: `discard:${cat.name}`, action: "switch-back" } });
     } else {
-      plan.notes.push(`${x.rel} 被 switch 到其他 URL，不属于可丢弃类别，保持不动`);
+      plan.notes.push(`${RULE_HINT}${x.rel} 被 switch 到其他 URL，不属于可丢弃类别，保持不动`);
     }
   }
   return plan;
@@ -340,6 +354,41 @@ async function planRound(ctx: EngineCtx, items: Item[]): Promise<Plan> {
 function localWhat(it: StatusItem): string {
   const label: Record<string, string> = { modified: "本地修改", added: "本地新增", deleted: "本地删除", replaced: "本地替换", missing: "本地缺失" };
   return label[it.item] ?? (it.props === "modified" ? "本地属性修改" : it.item);
+}
+
+/**
+ * 仓库里同一目录有只差大小写的两个文件（如 Show.anim 与 show.anim）时，大小写不敏感的文件系统只能放一个，
+ * 另一个永远显示缺失；revert 它会覆盖掉留下的那个，永远收敛不了。
+ * 判定：条目缺失，但按它的路径能打开文件，而目录里的实际文件名大小写不同，且那个名字不是未纳管文件。
+ * 返回 缺失条目 → 磁盘上占位的受控条目。
+ */
+function caseClashes(ctx: EngineCtx, items: Item[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const unversioned = new Set(items.filter((x) => x.item.item === "unversioned").map((x) => x.rel.toLowerCase()));
+  const listings = new Map<string, string[]>();
+  for (const x of items) {
+    if (x.item.item !== "missing" || x.rel === ".") continue;
+    const abs = ctx.abs(x.rel);
+    if (!existsSync(abs)) continue;
+    const parentRel = path.posix.dirname(x.rel);
+    const parent = path.dirname(abs);
+    let names = listings.get(parent);
+    if (!names) {
+      try {
+        names = readdirSync(parent);
+      } catch {
+        names = [];
+      }
+      listings.set(parent, names);
+    }
+    const base = path.posix.basename(x.rel);
+    const actual = names.find((n) => n !== base && n.toLowerCase() === base.toLowerCase());
+    if (!actual) continue;
+    const other = parentRel === "." ? actual : `${parentRel}/${actual}`;
+    if (unversioned.has(other.toLowerCase())) continue;
+    out.set(x.rel, other);
+  }
+  return out;
 }
 
 async function readVictims(ctx: EngineCtx, list: Item[]): Promise<Victim[]> {
