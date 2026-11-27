@@ -9,16 +9,21 @@ import { parse, TomlError } from "smol-toml";
 import { UsageError } from "../../../shared/cli";
 import { DEPTHS, isDepth, specErrors, specFromExclude, type Depth, type SparseSpec } from "./sparse";
 
+/** 一个允许放槽位的存储目录；minFreeGiB 是在这里新建槽位前要求的剩余空间。 */
+export type StorageRoot = { path: string; minFreeGiB: number };
+
 export type PoolConfig = {
   maxSlots: number;
   defaultTtl: string;
   svnRoot: string;
-  resident: string[];
+  /** 当前需要的工作分支（工程清单）；消费方按它生成工程卡片，换出槽位时优先保留它们。 */
+  projects: string[];
   branches: { pattern: string; listFrom: string[]; recentDays: number };
   aliases: Record<string, string>;
   sparse: SparseSpec;
   patchRetentionDays: number;
-  storage: { roots: string[]; minFreeGiB: number };
+  /** roots 至少一项；minFreeGiB 是没有单独写下限的目录使用的默认值。 */
+  storage: { roots: StorageRoot[]; minFreeGiB: number };
   hooks?: { beforeUpdate?: string[]; retryBlocked: boolean };
 };
 
@@ -26,10 +31,11 @@ export class ConfigError extends UsageError {}
 
 export const CONFIG_FILE = "pool.toml";
 
-const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
+const TOP_KEYS = new Set(["maxSlots", "defaultTtl", "svnRoot", "projects", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
 const BRANCH_KEYS = new Set(["pattern", "listFrom", "recentDays"]);
 const SPARSE_KEYS = new Set(["exclude", "root", "depth"]);
 const STORAGE_KEYS = new Set(["roots", "minFreeGiB"]);
+const ROOT_KEYS = new Set(["path", "minFreeGiB"]);
 const HOOK_KEYS = new Set(["beforeUpdate", "retryBlocked"]);
 
 /** 时长：`30m`、`12h`、`1d`、`2w`，或 `forever`。 */
@@ -89,6 +95,9 @@ export function parseConfig(text: string): PoolConfig {
     throw new ConfigError(`${CONFIG_FILE}${line ? ` 第 ${line} 行` : ""} ${field}：${message}`);
   };
 
+  if (raw.resident !== undefined) {
+    fail("", "resident", "已移除：池里不再有常驻分支。日常使用的工程（如 trunk）请移出池单独管理，其余需要的分支写进 projects");
+  }
   for (const key of Object.keys(raw)) {
     if (!TOP_KEYS.has(key)) fail("", key, "未知字段");
   }
@@ -135,7 +144,7 @@ export function parseConfig(text: string): PoolConfig {
   if (raw.svnRoot === undefined) fail("", undefined, "缺少 svnRoot");
   const svnRoot = str("", "svnRoot", raw.svnRoot).replace(/\/+$/, "");
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(svnRoot)) fail("", "svnRoot", "应为仓库 URL（如 https://、svn://、file://）");
-  const resident = strList("", "resident", raw.resident);
+  const projects = strList("", "projects", raw.projects);
   const patchRetentionDays = int("", "patchRetentionDays", raw.patchRetentionDays, 30, 1);
 
   const b = table("branches", BRANCH_KEYS);
@@ -150,19 +159,6 @@ export function parseConfig(text: string): PoolConfig {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
 
-  const disk = table("storage", STORAGE_KEYS);
-  const roots = strList("storage", "roots", disk.roots);
-  if (disk.roots !== undefined && roots.length === 0) fail("storage", "roots", "至少指定一个专用目录，省略则使用池根/slots");
-  for (const root of roots) {
-    if (!path.isAbsolute(root) || (process.platform === "win32" && !/^[a-z]:[\\/]/i.test(root))) {
-      fail("storage", "roots", `应为本机绝对目录：${root}`);
-    }
-    if (path.resolve(root) === path.parse(path.resolve(root)).root || /[\u0000-\u001f]/.test(root)) {
-      fail("storage", "roots", `不能使用盘根或含控制字符的目录：${root}`);
-    }
-  }
-  const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
-
   const h = table("hooks", HOOK_KEYS);
   const beforeUpdate = h.beforeUpdate === undefined ? undefined : strList("hooks", "beforeUpdate", h.beforeUpdate);
   if (beforeUpdate && (beforeUpdate.length === 0 || beforeUpdate.length > 64 || beforeUpdate.some((v) => /[\u0000-\u001f]/.test(v)))) {
@@ -174,25 +170,77 @@ export function parseConfig(text: string): PoolConfig {
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
 
-  for (const name of resident) {
-    if (!isBranchName(name)) fail("", "resident", `分支名不合法：${name}`);
+  for (const name of projects) {
+    if (!isBranchName(name)) fail("", "projects", `分支名不合法：${name}`);
   }
+
+  const storage = parseStorage(table("storage", STORAGE_KEYS), fail, int);
 
   return {
     maxSlots,
     defaultTtl,
     svnRoot,
-    resident: [...new Set(resident)],
+    projects: [...new Set(projects)],
     branches: { pattern, listFrom, recentDays },
     aliases,
     sparse,
     patchRetentionDays,
-    storage: { roots: [...new Set(roots.map((p) => path.normalize(p)))], minFreeGiB },
+    storage,
     ...(raw.hooks !== undefined ? { hooks: { beforeUpdate, retryBlocked: h.retryBlocked === true } } : {}),
   };
 }
 
 type Fail = (section: string, key: string | undefined, message: string) => never;
+type Int = (section: string, key: string, value: unknown, fallback: number | undefined, min: number) => number;
+
+function storageKey(p: string): string {
+  const normalized = path.normalize(p);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * `[storage]`：槽位放在哪些本机目录（可跨盘）。roots 必填；每项是目录字符串，或 `{ path, minFreeGiB }`
+ * 单独指定这个目录的剩余空间下限；顶层 minFreeGiB 是没写下限的目录用的默认值。
+ */
+function parseStorage(disk: Record<string, unknown>, fail: Fail, int: Int): PoolConfig["storage"] {
+  const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
+  const need = "列出允许放槽位的本机目录（可跨盘），例：roots = [\"E:/pool-slots\", { path = \"F:/pool-slots\", minFreeGiB = 150 }]；池定义目录里不放槽位";
+  if (disk.roots === undefined) fail("storage", undefined, `缺少 [storage].roots：${need}`);
+  if (!Array.isArray(disk.roots) || disk.roots.length === 0) fail("storage", "roots", `应为非空数组：${need}`);
+  const roots: StorageRoot[] = [];
+  const seen = new Map<string, StorageRoot>();
+  for (const item of disk.roots as unknown[]) {
+    let dir: unknown = item;
+    let min = minFreeGiB;
+    if (item && typeof item === "object" && !Array.isArray(item) && !(item instanceof Date)) {
+      const entry = item as Record<string, unknown>;
+      for (const k of Object.keys(entry)) if (!ROOT_KEYS.has(k)) fail("storage", "roots", `未知字段 ${k}（每项只能写 path 与 minFreeGiB）`);
+      dir = entry.path;
+      if (entry.minFreeGiB !== undefined) {
+        const n = typeof entry.minFreeGiB === "bigint" ? Number(entry.minFreeGiB) : entry.minFreeGiB;
+        if (typeof n !== "number" || !Number.isInteger(n) || n < 0) fail("storage", "roots", `${String(dir)} 的 minFreeGiB 应为不小于 0 的整数`);
+        min = n as number;
+      }
+    }
+    if (typeof dir !== "string" || dir.trim() === "") fail("storage", "roots", "每项应为目录字符串或 { path, minFreeGiB }");
+    const root = (dir as string).trim();
+    if (!path.isAbsolute(root) || (process.platform === "win32" && !/^[a-z]:[\\/]/i.test(root))) {
+      fail("storage", "roots", `应为本机绝对目录：${root}`);
+    }
+    if (path.resolve(root) === path.parse(path.resolve(root)).root || /[\u0000-\u001f]/.test(root)) {
+      fail("storage", "roots", `不能使用盘根或含控制字符的目录：${root}`);
+    }
+    const value: StorageRoot = { path: path.normalize(root), minFreeGiB: min };
+    const prev = seen.get(storageKey(root));
+    if (prev) {
+      if (prev.minFreeGiB !== min) fail("storage", "roots", `${root} 重复且下限不同（${prev.minFreeGiB} / ${min}）`);
+      continue;
+    }
+    seen.set(storageKey(root), value);
+    roots.push(value);
+  }
+  return { roots, minFreeGiB };
+}
 
 /** 相对工作副本根的路径：正斜杠、去掉首尾斜杠和 ./；空、含 . 或 .. 段返回 undefined。 */
 function normalizeRel(raw: string): string | undefined {
@@ -257,7 +305,15 @@ export function loadConfig(root: string): PoolConfig {
   if (!existsSync(file)) {
     throw new ConfigError(`池根 ${root} 下没有 ${CONFIG_FILE}；先按 README 写一份配置`);
   }
-  return parseConfig(readFileSync(file, "utf8"));
+  const config = parseConfig(readFileSync(file, "utf8"));
+  const pool = storageKey(path.resolve(root));
+  for (const r of config.storage.roots) {
+    const rel = path.relative(pool, storageKey(path.resolve(r.path)));
+    if (rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))) {
+      throw new ConfigError(`${CONFIG_FILE} storage.roots：${r.path} 在池定义目录 ${root} 里面；槽位应放在池定义目录之外`);
+    }
+  }
+  return config;
 }
 
 /** 分支名：非空、不含控制字符、不以 / 开头、不含 .. 段。 */

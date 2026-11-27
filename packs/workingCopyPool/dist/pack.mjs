@@ -1278,10 +1278,11 @@ function formatSpecToml(spec) {
 var ConfigError = class extends UsageError {
 };
 var CONFIG_FILE = "pool.toml";
-var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "resident", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
+var TOP_KEYS = /* @__PURE__ */ new Set(["maxSlots", "defaultTtl", "svnRoot", "projects", "branches", "aliases", "sparse", "patchRetentionDays", "storage", "hooks"]);
 var BRANCH_KEYS = /* @__PURE__ */ new Set(["pattern", "listFrom", "recentDays"]);
 var SPARSE_KEYS = /* @__PURE__ */ new Set(["exclude", "root", "depth"]);
 var STORAGE_KEYS = /* @__PURE__ */ new Set(["roots", "minFreeGiB"]);
+var ROOT_KEYS = /* @__PURE__ */ new Set(["path", "minFreeGiB"]);
 var HOOK_KEYS = /* @__PURE__ */ new Set(["beforeUpdate", "retryBlocked"]);
 var TTL_RE = /^(\d+)(m|h|d|w)$/;
 function isTtl(value) {
@@ -1329,6 +1330,9 @@ function parseConfig(text) {
     const field = [section, key2].filter(Boolean).join(".");
     throw new ConfigError(`${CONFIG_FILE}${line ? ` \u7B2C ${line} \u884C` : ""} ${field}\uFF1A${message}`);
   };
+  if (raw.resident !== void 0) {
+    fail("", "resident", "\u5DF2\u79FB\u9664\uFF1A\u6C60\u91CC\u4E0D\u518D\u6709\u5E38\u9A7B\u5206\u652F\u3002\u65E5\u5E38\u4F7F\u7528\u7684\u5DE5\u7A0B\uFF08\u5982 trunk\uFF09\u8BF7\u79FB\u51FA\u6C60\u5355\u72EC\u7BA1\u7406\uFF0C\u5176\u4F59\u9700\u8981\u7684\u5206\u652F\u5199\u8FDB projects");
+  }
   for (const key2 of Object.keys(raw)) {
     if (!TOP_KEYS.has(key2)) fail("", key2, "\u672A\u77E5\u5B57\u6BB5");
   }
@@ -1373,7 +1377,7 @@ function parseConfig(text) {
   if (raw.svnRoot === void 0) fail("", void 0, "\u7F3A\u5C11 svnRoot");
   const svnRoot = str("", "svnRoot", raw.svnRoot).replace(/\/+$/, "");
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(svnRoot)) fail("", "svnRoot", "\u5E94\u4E3A\u4ED3\u5E93 URL\uFF08\u5982 https://\u3001svn://\u3001file://\uFF09");
-  const resident = strList("", "resident", raw.resident);
+  const projects = strList("", "projects", raw.projects);
   const patchRetentionDays = int("", "patchRetentionDays", raw.patchRetentionDays, 30, 1);
   const b = table("branches", BRANCH_KEYS);
   const pattern = str("branches", "pattern", b.pattern, "branches/{name}").replace(/^\/+|\/+$/g, "");
@@ -1385,18 +1389,6 @@ function parseConfig(text) {
   for (const [name, value] of Object.entries(a)) {
     aliases[name] = str("aliases", name, value).replace(/^\/+|\/+$/g, "");
   }
-  const disk = table("storage", STORAGE_KEYS);
-  const roots = strList("storage", "roots", disk.roots);
-  if (disk.roots !== void 0 && roots.length === 0) fail("storage", "roots", "\u81F3\u5C11\u6307\u5B9A\u4E00\u4E2A\u4E13\u7528\u76EE\u5F55\uFF0C\u7701\u7565\u5219\u4F7F\u7528\u6C60\u6839/slots");
-  for (const root of roots) {
-    if (!path2.isAbsolute(root) || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(root)) {
-      fail("storage", "roots", `\u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u76EE\u5F55\uFF1A${root}`);
-    }
-    if (path2.resolve(root) === path2.parse(path2.resolve(root)).root || /[\u0000-\u001f]/.test(root)) {
-      fail("storage", "roots", `\u4E0D\u80FD\u4F7F\u7528\u76D8\u6839\u6216\u542B\u63A7\u5236\u5B57\u7B26\u7684\u76EE\u5F55\uFF1A${root}`);
-    }
-  }
-  const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
   const h = table("hooks", HOOK_KEYS);
   const beforeUpdate = h.beforeUpdate === void 0 ? void 0 : strList("hooks", "beforeUpdate", h.beforeUpdate);
   if (beforeUpdate && (beforeUpdate.length === 0 || beforeUpdate.length > 64 || beforeUpdate.some((v) => /[\u0000-\u001f]/.test(v)))) {
@@ -1406,21 +1398,65 @@ function parseConfig(text) {
   if (h.retryBlocked === true && !beforeUpdate) fail("hooks", "retryBlocked", "\u9700\u540C\u65F6\u914D\u7F6E beforeUpdate\uFF0C\u9ED8\u8BA4\u4E0D\u91CD\u8BD5\u963B\u585E\u69FD\u4F4D");
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
-  for (const name of resident) {
-    if (!isBranchName(name)) fail("", "resident", `\u5206\u652F\u540D\u4E0D\u5408\u6CD5\uFF1A${name}`);
+  for (const name of projects) {
+    if (!isBranchName(name)) fail("", "projects", `\u5206\u652F\u540D\u4E0D\u5408\u6CD5\uFF1A${name}`);
   }
+  const storage = parseStorage(table("storage", STORAGE_KEYS), fail, int);
   return {
     maxSlots,
     defaultTtl,
     svnRoot,
-    resident: [...new Set(resident)],
+    projects: [...new Set(projects)],
     branches: { pattern, listFrom, recentDays },
     aliases,
     sparse,
     patchRetentionDays,
-    storage: { roots: [...new Set(roots.map((p) => path2.normalize(p)))], minFreeGiB },
+    storage,
     ...raw.hooks !== void 0 ? { hooks: { beforeUpdate, retryBlocked: h.retryBlocked === true } } : {}
   };
+}
+function storageKey(p) {
+  const normalized = path2.normalize(p);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+function parseStorage(disk, fail, int) {
+  const minFreeGiB = int("storage", "minFreeGiB", disk.minFreeGiB, 0, 0);
+  const need = '\u5217\u51FA\u5141\u8BB8\u653E\u69FD\u4F4D\u7684\u672C\u673A\u76EE\u5F55\uFF08\u53EF\u8DE8\u76D8\uFF09\uFF0C\u4F8B\uFF1Aroots = ["E:/pool-slots", { path = "F:/pool-slots", minFreeGiB = 150 }]\uFF1B\u6C60\u5B9A\u4E49\u76EE\u5F55\u91CC\u4E0D\u653E\u69FD\u4F4D';
+  if (disk.roots === void 0) fail("storage", void 0, `\u7F3A\u5C11 [storage].roots\uFF1A${need}`);
+  if (!Array.isArray(disk.roots) || disk.roots.length === 0) fail("storage", "roots", `\u5E94\u4E3A\u975E\u7A7A\u6570\u7EC4\uFF1A${need}`);
+  const roots = [];
+  const seen = /* @__PURE__ */ new Map();
+  for (const item of disk.roots) {
+    let dir = item;
+    let min = minFreeGiB;
+    if (item && typeof item === "object" && !Array.isArray(item) && !(item instanceof Date)) {
+      const entry = item;
+      for (const k of Object.keys(entry)) if (!ROOT_KEYS.has(k)) fail("storage", "roots", `\u672A\u77E5\u5B57\u6BB5 ${k}\uFF08\u6BCF\u9879\u53EA\u80FD\u5199 path \u4E0E minFreeGiB\uFF09`);
+      dir = entry.path;
+      if (entry.minFreeGiB !== void 0) {
+        const n = typeof entry.minFreeGiB === "bigint" ? Number(entry.minFreeGiB) : entry.minFreeGiB;
+        if (typeof n !== "number" || !Number.isInteger(n) || n < 0) fail("storage", "roots", `${String(dir)} \u7684 minFreeGiB \u5E94\u4E3A\u4E0D\u5C0F\u4E8E 0 \u7684\u6574\u6570`);
+        min = n;
+      }
+    }
+    if (typeof dir !== "string" || dir.trim() === "") fail("storage", "roots", "\u6BCF\u9879\u5E94\u4E3A\u76EE\u5F55\u5B57\u7B26\u4E32\u6216 { path, minFreeGiB }");
+    const root = dir.trim();
+    if (!path2.isAbsolute(root) || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(root)) {
+      fail("storage", "roots", `\u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u76EE\u5F55\uFF1A${root}`);
+    }
+    if (path2.resolve(root) === path2.parse(path2.resolve(root)).root || /[\u0000-\u001f]/.test(root)) {
+      fail("storage", "roots", `\u4E0D\u80FD\u4F7F\u7528\u76D8\u6839\u6216\u542B\u63A7\u5236\u5B57\u7B26\u7684\u76EE\u5F55\uFF1A${root}`);
+    }
+    const value = { path: path2.normalize(root), minFreeGiB: min };
+    const prev = seen.get(storageKey(root));
+    if (prev) {
+      if (prev.minFreeGiB !== min) fail("storage", "roots", `${root} \u91CD\u590D\u4E14\u4E0B\u9650\u4E0D\u540C\uFF08${prev.minFreeGiB} / ${min}\uFF09`);
+      continue;
+    }
+    seen.set(storageKey(root), value);
+    roots.push(value);
+  }
+  return { roots, minFreeGiB };
 }
 function normalizeRel(raw) {
   const p = raw.trim().replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, "");
@@ -1476,7 +1512,15 @@ function loadConfig(root) {
   if (!existsSync(file)) {
     throw new ConfigError(`\u6C60\u6839 ${root} \u4E0B\u6CA1\u6709 ${CONFIG_FILE}\uFF1B\u5148\u6309 README \u5199\u4E00\u4EFD\u914D\u7F6E`);
   }
-  return parseConfig(readFileSync(file, "utf8"));
+  const config = parseConfig(readFileSync(file, "utf8"));
+  const pool = storageKey(path2.resolve(root));
+  for (const r of config.storage.roots) {
+    const rel = path2.relative(pool, storageKey(path2.resolve(r.path)));
+    if (rel === "" || rel !== ".." && !rel.startsWith(`..${path2.sep}`) && !path2.isAbsolute(rel)) {
+      throw new ConfigError(`${CONFIG_FILE} storage.roots\uFF1A${r.path} \u5728\u6C60\u5B9A\u4E49\u76EE\u5F55 ${root} \u91CC\u9762\uFF1B\u69FD\u4F4D\u5E94\u653E\u5728\u6C60\u5B9A\u4E49\u76EE\u5F55\u4E4B\u5916`);
+    }
+  }
+  return config;
 }
 function isBranchName(name) {
   if (!name || name !== name.trim()) return false;
@@ -1523,7 +1567,7 @@ function safeDecode(url) {
 var candidates = {
   id: "candidates",
   displayName: "\u5019\u9009\u5206\u652F",
-  description: "\u5F00\u5206\u652F\u7684\u5019\u9009\u9879\uFF1A\u6C60\u4E2D\u5DF2\u6709\u3001\u5E38\u9A7B\u3001\u6700\u8FD1\u4F7F\u7528\u3001listFrom \u4E0B\u6700\u8FD1\u6709\u63D0\u4EA4\u7684\u5206\u652F",
+  description: "\u5F00\u5206\u652F\u7684\u5019\u9009\u9879\uFF1A\u6C60\u4E2D\u5DF2\u6709\u3001\u5DE5\u7A0B\u6E05\u5355\uFF08projects\uFF09\u3001\u6700\u8FD1\u4F7F\u7528\u3001listFrom \u4E0B\u6700\u8FD1\u6709\u63D0\u4EA4\u7684\u5206\u652F",
   kind: "query",
   idempotent: true,
   supportsDryRun: true,
@@ -1574,7 +1618,7 @@ var release = {
 var hold = {
   id: "hold",
   displayName: "\u4FDD\u62A4\u5DE5\u4F5C\u526F\u672C",
-  description: "\u5916\u90E8\u5E94\u7528\u6B63\u5728\u4F7F\u7528\u8BE5\u5206\u652F\u7684\u5DE5\u4F5C\u526F\u672C\u65F6\u52A0\u4FDD\u62A4\uFF1A\u4E0D\u968F\u79DF\u7EA6\u5230\u671F\u6216\u8FDB\u7A0B\u9000\u51FA\u5931\u6548\uFF0C\u5207\u6362\u3001\u7F29\u5BB9\u3001\u5E38\u9A7B\u66F4\u65B0\u90FD\u4F1A\u8DF3\u8FC7\uFF1B\u53EA\u80FD\u7528\u540C\u4E00 holdId \u7684 unhold \u89E3\u9664\uFF0C\u591A\u4E2A\u6301\u6709\u8005\u4E92\u4E0D\u5F71\u54CD",
+  description: "\u5916\u90E8\u5E94\u7528\u6B63\u5728\u4F7F\u7528\u8BE5\u5206\u652F\u7684\u5DE5\u4F5C\u526F\u672C\u65F6\u52A0\u4FDD\u62A4\uFF1A\u4E0D\u968F\u79DF\u7EA6\u5230\u671F\u6216\u8FDB\u7A0B\u9000\u51FA\u5931\u6548\uFF0C\u5207\u6362\u3001\u7F29\u5BB9\u3001refresh \u66F4\u65B0\u90FD\u4F1A\u8DF3\u8FC7\uFF1B\u53EA\u80FD\u7528\u540C\u4E00 holdId \u7684 unhold \u89E3\u9664\uFF0C\u591A\u4E2A\u6301\u6709\u8005\u4E92\u4E0D\u5F71\u54CD",
   kind: "action",
   idempotent: true,
   supportsDryRun: true,
@@ -1604,7 +1648,7 @@ var unhold = {
 var gc = {
   id: "gc",
   displayName: "\u6C60\u56DE\u6536",
-  description: "\u63A8\u8FDB\u4E2D\u65AD\u6062\u590D\u3001\u590D\u67E5\u963B\u585E\u69FD\u4F4D\u3001\u7F29\u5BB9\u5220\u9664\u591A\u51FA\u7684\u7A7A\u95F2\u69FD\u4F4D\u3001\u6E05\u7406\u65AD\u94FE\u4E0E\u8FC7\u671F\u5B58\u6863",
+  description: "\u63A8\u8FDB\u4E2D\u65AD\u6062\u590D\u3001\u6821\u6B63\u6C60\u5916\u6539\u52A8\uFF08\u88AB\u5207\u8D70\u7684\u5206\u652F\u3001\u5DF2\u5220\u7684\u76EE\u5F55\uFF09\u3001\u590D\u67E5\u963B\u585E\u69FD\u4F4D\u3001\u7F29\u5BB9\u5220\u9664\u591A\u51FA\u7684\u7A7A\u95F2\u69FD\u4F4D\u3001\u6E05\u7406\u5931\u6548\u5165\u53E3\u4E0E\u8FC7\u671F\u5B58\u6863",
   kind: "action",
   idempotent: true,
   supportsDryRun: true,
@@ -1612,8 +1656,8 @@ var gc = {
 };
 var refresh = {
   id: "refresh",
-  displayName: "\u66F4\u65B0\u5E38\u9A7B\u5206\u652F",
-  description: "\u5E38\u9A7B\u5206\u652F\u5728\u6C60\u91CC\u5C31\u66F4\u65B0\u5230\u6700\u65B0\uFF0C\u4E0D\u5728\u6C60\u91CC\u5C31\u7528\u7A7A\u95F2\u69FD\u4F4D\u51C6\u5907\u597D",
+  displayName: "\u66F4\u65B0\u5DE5\u7A0B",
+  description: "\u5DE5\u7A0B\u6E05\u5355\uFF08projects\uFF09\u91CC\u5DF2\u6302\u5728\u69FD\u4F4D\u4E0A\u7684\u5206\u652F\u66F4\u65B0\u5230\u6700\u65B0\uFF1B\u6CA1\u6302\u69FD\u7684\u8DF3\u8FC7\uFF0C\u4E0D\u4E3A\u5B83\u4EEC\u62A2\u69FD\u4F4D",
   kind: "action",
   idempotent: true,
   supportsDryRun: true,
@@ -1639,7 +1683,7 @@ var manifest = {
 };
 
 // packs/workingCopyPool/src/pool.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readdirSync, realpathSync as realpathSync3, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync9, lstatSync as lstatSync3, mkdirSync as mkdirSync7, readdirSync, realpathSync as realpathSync3, rmSync as rmSync3, statSync as statSync4 } from "node:fs";
 import path13 from "node:path";
 
 // shared/occupants.ts
@@ -2751,7 +2795,6 @@ function poolPaths(root) {
   const meta = path8.join(root, ".pool");
   return {
     root,
-    slots: path8.join(root, "slots"),
     branch: path8.join(root, "branch"),
     patches: path8.join(root, "patches"),
     meta,
@@ -2762,9 +2805,12 @@ function poolPaths(root) {
   };
 }
 function slotDir(paths, value) {
-  const slot = typeof value === "string" ? readState(paths).slots.find((s) => s.id === value) ?? { id: value } : value;
+  const slot = typeof value === "string" ? readState(paths).slots.find((s) => s.id === value) : value;
+  if (!slot) throw new Error(`\u69FD\u4F4D ${value} \u4E0D\u5728\u72B6\u6001\u6587\u4EF6\u91CC`);
   if (!/^s\d{2,3}$/.test(slot.id)) throw new Error(`\u69FD\u4F4D\u7F16\u53F7\u4E0D\u5408\u6CD5\uFF1A${slot.id}`);
-  if (slot.path === void 0) return path8.join(paths.slots, slot.id);
+  if (slot.path === void 0 || slot.path === null) {
+    throw new Error(`\u69FD\u4F4D ${slot.id} \u6CA1\u6709\u8BB0\u5F55 path\uFF1A\u6C60\u5B9A\u4E49\u76EE\u5F55\u91CC\u7684 slots/ \u5E03\u5C40\u5DF2\u4E0D\u518D\u652F\u6301\uFF0C\u8BF7\u5728 ${paths.state} \u91CC\u5199\u5165\u5B83\u7684\u5B9E\u9645\u7EDD\u5BF9\u76EE\u5F55\uFF0C\u5E76\u628A\u6240\u5728\u76EE\u5F55\u52A0\u8FDB [storage].roots`);
+  }
   if (typeof slot.path !== "string" || !path8.isAbsolute(slot.path) || path8.basename(path8.normalize(slot.path)) !== slot.id || process.platform === "win32" && !/^[a-z]:[\\/]/i.test(slot.path) || /[\u0000-\u001f]/.test(slot.path)) {
     throw new Error(`\u69FD\u4F4D ${slot.id} \u7684 path \u5FC5\u987B\u662F\u4EE5\u69FD\u4F4D\u7F16\u53F7\u7ED3\u5C3E\u7684\u672C\u673A\u7EDD\u5BF9\u76EE\u5F55`);
   }
@@ -2777,7 +2823,7 @@ function branchLink(paths, branch) {
   return path8.join(paths.branch, branchDirName(branch));
 }
 function ensureLayout(paths) {
-  for (const dir of [paths.slots, paths.branch, paths.patches, paths.meta, paths.cache]) {
+  for (const dir of [paths.branch, paths.patches, paths.meta, paths.cache]) {
     mkdirSync5(dir, { recursive: true });
   }
   if (!existsSync5(paths.state)) {
@@ -2889,14 +2935,14 @@ function leaseActive(lease, now) {
   const until = Date.parse(lease.until);
   return Number.isFinite(until) && until > now.getTime();
 }
-function isResident(slot, config) {
-  return Boolean(slot.branch) && config.resident.includes(slot.branch);
-}
 function isHeld(slot) {
   return Boolean(slot.holds) && Object.keys(slot.holds).length > 0;
 }
-function isIdle(slot, config, now) {
-  return slot.phase === "ready" && !isResident(slot, config) && !leaseActive(slot.lease, now) && !isHeld(slot);
+function isIdle(slot, now) {
+  return slot.phase === "ready" && !leaseActive(slot.lease, now) && !isHeld(slot);
+}
+function isProject(slot, config) {
+  return Boolean(slot.branch) && config.projects.includes(slot.branch);
 }
 function isInterrupted(slot) {
   return Boolean(slot.op) && !pidAlive(slot.op.pid);
@@ -3343,11 +3389,11 @@ var StorageOwnershipError = class extends Error {
 };
 var GIB = 1024 ** 3;
 function inspectStorage(root) {
-  const physical = realpathSync2(root);
-  const stat = statSync3(physical);
+  const physical2 = realpathSync2(root);
+  const stat = statSync3(physical2);
   if (!stat.isDirectory()) throw new Error("\u4E0D\u662F\u76EE\u5F55");
-  const fs = statfsSync(physical);
-  return { root: physical, volume: String(stat.dev), freeGiB: Number(fs.bavail) * Number(fs.bsize) / GIB };
+  const fs = statfsSync(physical2);
+  return { root: physical2, volume: String(stat.dev), freeGiB: Number(fs.bavail) * Number(fs.bsize) / GIB };
 }
 function assertStorageParent(wc) {
   try {
@@ -3359,6 +3405,13 @@ function assertStorageParent(wc) {
 function key(p) {
   const normalized = path11.resolve(p);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+function physical(p) {
+  try {
+    return realpathSync2(p);
+  } catch {
+    return path11.resolve(p);
+  }
 }
 function contains(parent, child) {
   const rel = path11.relative(key(parent), key(child));
@@ -3373,66 +3426,58 @@ function existsEntry(p) {
     throw error;
   }
 }
+function rootOf(storage, wc) {
+  const parent = path11.dirname(wc);
+  const lexical = key(parent);
+  const real = key(physical(parent));
+  return storage.roots.find((r) => key(r.path) === lexical || key(physical(r.path)) === real);
+}
+function minFreeFor(storage, wc) {
+  return rootOf(storage, wc)?.minFreeGiB ?? storage.minFreeGiB;
+}
 function selectSlotPath(paths, state, id, storage, inspect = inspectStorage) {
-  const roots = storage.roots.length ? storage.roots : [paths.slots];
+  if (!storage.roots.length) throw new Error(`\u6CA1\u6709\u914D\u7F6E\u69FD\u4F4D\u5B58\u50A8\u76EE\u5F55\uFF08${id}\uFF09\uFF1A\u8BF7\u5728 [storage].roots \u5217\u51FA\u5141\u8BB8\u653E\u69FD\u4F4D\u7684\u76EE\u5F55`);
   const notes = [];
   const candidates3 = [];
-  const occupied3 = state.slots.map((s) => {
-    const wc = slotDir(paths, s);
-    try {
-      return realpathSync2(wc);
-    } catch {
-      return wc;
-    }
-  });
-  const protectedDirs = [paths.meta, paths.branch, paths.patches].map((p) => {
-    try {
-      return realpathSync2(p);
-    } catch {
-      return path11.resolve(p);
-    }
-  });
-  let physicalPool;
-  try {
-    physicalPool = realpathSync2(paths.root);
-  } catch {
-    physicalPool = path11.resolve(paths.root);
-  }
+  const occupied3 = state.slots.map((s) => physical(slotDir(paths, s)));
+  const protectedDirs = [paths.meta, paths.branch, paths.patches].map(physical);
+  const physicalPool = physical(paths.root);
   const reservations = /* @__PURE__ */ new Map();
   for (const slot of state.slots) {
     if (slot.op?.kind !== "create") continue;
     try {
-      const disk = inspect(path11.dirname(slotDir(paths, slot)));
-      reservations.set(disk.volume, (reservations.get(disk.volume) ?? 0) + storage.minFreeGiB);
+      const wc = slotDir(paths, slot);
+      const disk = inspect(path11.dirname(wc));
+      reservations.set(disk.volume, (reservations.get(disk.volume) ?? 0) + minFreeFor(storage, wc));
     } catch {
     }
   }
   const seen = /* @__PURE__ */ new Set();
-  for (const root of roots) {
+  for (const root of storage.roots) {
     try {
-      const disk = inspect(root);
+      const disk = inspect(root.path);
       if (!Number.isFinite(disk.freeGiB) || disk.freeGiB < 0) throw new Error("\u65E0\u6CD5\u8BFB\u53D6\u6709\u6548\u7684\u5269\u4F59\u7A7A\u95F4");
       const wc = path11.join(disk.root, id);
       if (seen.has(key(wc))) continue;
       seen.add(key(wc));
-      if (key(disk.root) === key(physicalPool) || protectedDirs.some((p) => contains(p, wc) || contains(wc, p))) {
-        throw new Error("\u4E0D\u80FD\u628A\u69FD\u4F4D\u653E\u5165\u6C60\u914D\u7F6E\u3001\u5165\u53E3\u6216\u5B58\u6863\u76EE\u5F55");
+      if (contains(physicalPool, wc) || contains(wc, physicalPool) || protectedDirs.some((p) => contains(p, wc) || contains(wc, p))) {
+        throw new Error("\u4E0D\u80FD\u628A\u69FD\u4F4D\u653E\u8FDB\u6C60\u5B9A\u4E49\u76EE\u5F55\uFF08\u914D\u7F6E\u3001\u5165\u53E3\u6216\u5B58\u6863\uFF09");
       }
       if (occupied3.some((p) => contains(p, wc) || contains(wc, p))) throw new Error("\u4E0E\u5DF2\u6709\u69FD\u4F4D\u8DEF\u5F84\u91CD\u53E0");
       if (existsEntry(wc)) throw new Error(`\u5DF2\u6709 ${id} \u76EE\u5F55\u6216\u94FE\u63A5\uFF0C\u4E0D\u8986\u76D6`);
       const available = disk.freeGiB - (reservations.get(disk.volume) ?? 0);
-      if (available < storage.minFreeGiB) {
-        throw new Error(`\u5269\u4F59 ${disk.freeGiB.toFixed(1)} GiB\uFF0C\u6263\u9664\u5E76\u53D1\u9884\u7559\u540E ${available.toFixed(1)} GiB\uFF0C\u8981\u6C42\u81F3\u5C11 ${storage.minFreeGiB} GiB`);
+      if (available < root.minFreeGiB) {
+        throw new Error(`\u5269\u4F59 ${disk.freeGiB.toFixed(1)} GiB\uFF0C\u6263\u9664\u5E76\u53D1\u9884\u7559\u540E ${available.toFixed(1)} GiB\uFF0C\u8981\u6C42\u81F3\u5C11 ${root.minFreeGiB} GiB`);
       }
       candidates3.push({ ...disk, wc, available });
     } catch (error) {
-      notes.push(`${root}\uFF1A${error instanceof Error ? error.message : String(error)}`);
+      notes.push(`${root.path}\uFF1A${error instanceof Error ? error.message : String(error)}`);
     }
   }
   candidates3.sort((a, b) => b.available - a.available);
   if (!candidates3.length) throw new Error(`\u6CA1\u6709\u53EF\u7528\u7684\u69FD\u4F4D\u5B58\u50A8\u76EE\u5F55\uFF08${id}\uFF09\uFF1A
 ${notes.join("\n")}
-\u8BF7\u68C0\u67E5 [storage].roots \u4E0E minFreeGiB\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u56DE\u9000\u5230\u672A\u914D\u7F6E\u7684\u78C1\u76D8`);
+\u8BF7\u68C0\u67E5 [storage].roots \u4E0E\u5404\u76EE\u5F55\u7684 minFreeGiB\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u56DE\u9000\u5230\u672A\u914D\u7F6E\u7684\u78C1\u76D8`);
   return candidates3[0].wc;
 }
 function checkCreationSpace(wc, minFreeGiB) {
@@ -3504,14 +3549,13 @@ function describeLease(lease, now) {
   const until = lease.until === "forever" ? "\u6C38\u4E45" : `\u5230 ${fmtTime(lease.until)}`;
   return `${until}${lease.tag ? `\uFF08${lease.tag}\uFF09` : ""}`;
 }
-function slotState(slot, config, now) {
+function slotState(slot, now) {
   if (slot.op && !pidAlive(slot.op.pid)) return "interrupted";
   if (slot.phase === "switching") return "switching";
   if (slot.phase === "retiring") return "retiring";
   if (slot.phase === "blocked") return "blocked";
   if (isHeld(slot)) return "held";
   if (leaseActive(slot.lease, now)) return "occupied";
-  if (isResident(slot, config)) return "resident";
   return "idle";
 }
 function holdList(slot) {
@@ -3526,7 +3570,7 @@ function viewSlots(pool, state) {
   return state.slots.map((slot) => ({
     id: slot.id,
     branch: slot.branch,
-    state: slotState(slot, pool.config, now),
+    state: slotState(slot, now),
     phase: slot.phase,
     lease: leaseActive(slot.lease, now) ? slot.lease : null,
     lastUsed: slot.lastUsed ?? null,
@@ -3539,18 +3583,11 @@ function viewSlots(pool, state) {
   }));
 }
 function poolView(pool, state) {
-  return {
-    root: pool.root,
-    maxSlots: pool.config.maxSlots,
-    resident: pool.config.resident,
-    storage: { ...pool.config.storage, roots: pool.config.storage.roots.length ? pool.config.storage.roots : [pool.paths.slots] },
-    slots: viewSlots(pool, state)
-  };
+  return { root: pool.root, maxSlots: pool.config.maxSlots, projects: pool.config.projects, storage: pool.config.storage, slots: viewSlots(pool, state) };
 }
 var STATE_TEXT = {
   occupied: "\u5360\u7528",
   held: "\u4FDD\u62A4\u4E2D",
-  resident: "\u5E38\u9A7B",
   idle: "\u7A7A\u95F2",
   switching: "\u5207\u6362\u4E2D",
   blocked: "\u963B\u585E",
@@ -3632,13 +3669,14 @@ async function recover(pool) {
       notes.push(`${item.id} \u4E2D\u65AD\u6062\u590D\u5931\u8D25\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E\uFF1A${message}`);
     }
   }
+  notes.push(...await reconcile(pool));
   return notes;
 }
 async function recoverSlot(pool, id, op, branch) {
   const slot = findSlot(readState(pool.paths), id);
   const wc = slotDir(pool.paths, slot);
-  if (slot.path) assertStorageParent(wc);
-  if (slot.path && op.kind === "create" && !op.created && existsSync9(wc)) {
+  assertStorageParent(wc);
+  if (op.kind === "create" && !op.created && existsSync9(wc)) {
     throw new StorageOwnershipError(`\u65B0\u5EFA\u76EE\u5F55\u6240\u6709\u6743\u672A\u786E\u8BA4\uFF1A${wc}\uFF1B\u4FDD\u7559\u76EE\u5F55\u4E0E\u69FD\u4F4D\u8BB0\u5F55\uFF0C\u8BF7\u4EBA\u5DE5\u68C0\u67E5`);
   }
   const sctx = svnCtx(pool);
@@ -3692,7 +3730,98 @@ async function recoverSlot(pool, id, op, branch) {
   complete = complete && Boolean(fresh.branch);
   return complete ? `${id} \u4E2D\u65AD\u524D\u5DF2\u5B8C\u6210 ${target}\uFF0C\u5DF2\u8865\u5EFA\u5165\u53E3` : `${id} \u4E2D\u65AD\u65F6\u672A\u5B8C\u6210${target ? ` ${target}` : ""}\uFF0C\u5F53\u524D ${fresh.branch || "\u72B6\u6001\u4E0D\u660E"}\uFF0C\u4E0B\u6B21\u5360\u7528\u65F6\u91CD\u65B0\u5207\u6362`;
 }
-function claimSlot(state, config, branch, lease, now, excluded = /* @__PURE__ */ new Set(), allocate) {
+function missingDir(wc) {
+  try {
+    lstatSync3(wc);
+    return false;
+  } catch (error) {
+    return error.code === "ENOENT";
+  }
+}
+async function reconcile(pool, ids) {
+  const notes = [];
+  const sctx = svnCtx(pool);
+  const list = readState(pool.paths).slots.filter((s) => (s.phase === "ready" || s.phase === "blocked") && !s.op && !s.ownershipUnconfirmed && (!ids || ids.has(s.id)));
+  for (const seen of list) {
+    const wc = slotDir(pool.paths, seen);
+    const name = `${seen.id} ${seen.branch || "(\u672A\u5B9A)"}`;
+    const same = (slot) => Boolean(slot) && slot.phase === seen.phase && !slot.op && slot.branch === seen.branch && slot.url === seen.url;
+    try {
+      assertStorageParent(wc);
+    } catch (error) {
+      if (seen.phase === "ready") notes.push(`${name}\uFF1A${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    if (missingDir(wc)) {
+      const result2 = await mutate(pool.paths, (state) => {
+        const slot = state.slots.find((s) => s.id === seen.id);
+        if (!same(slot)) return "";
+        if (isHeld(slot)) {
+          if (slot.phase === "blocked") return "";
+          slot.phase = "blocked";
+          slot.blockedReason = `\u5DE5\u4F5C\u526F\u672C\u76EE\u5F55\u4E0D\u5B58\u5728\uFF1A${wc}\uFF1B\u4ECD\u6709\u6301\u6709\u4FDD\u62A4\uFF08${holdNames(slot)}\uFF09\uFF0C\u89E3\u9664\u540E\u4E0B\u6B21\u8FD0\u884C\u79FB\u9664\u8BB0\u5F55`;
+          return `${name}\uFF1A\u76EE\u5F55\u4E0D\u5B58\u5728\uFF0C\u4ECD\u53D7\u4FDD\u62A4\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E`;
+        }
+        state.slots = state.slots.filter((s) => s.id !== seen.id);
+        return `${name}\uFF1A\u76EE\u5F55\u5DF2\u4E0D\u5B58\u5728\uFF0C\u5DF2\u79FB\u9664\u69FD\u4F4D\u8BB0\u5F55`;
+      });
+      if (result2) notes.push(result2);
+      continue;
+    }
+    if (seen.phase !== "ready") continue;
+    if (!existsSync9(path13.join(wc, ".svn"))) {
+      const done = await mutate(pool.paths, (state) => {
+        const slot = state.slots.find((s) => s.id === seen.id);
+        if (!same(slot)) return false;
+        slot.phase = "blocked";
+        slot.blockedReason = `\u76EE\u5F55\u4E0D\u662F svn \u5DE5\u4F5C\u526F\u672C\uFF1A${wc}\uFF1B\u5185\u5BB9\u4FDD\u7559\uFF0C\u8BF7\u4EBA\u5DE5\u5904\u7406`;
+        return true;
+      });
+      if (done) notes.push(`${name}\uFF1A\u76EE\u5F55\u4E0D\u662F\u5DE5\u4F5C\u526F\u672C\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E`);
+      continue;
+    }
+    if (!seen.branch) continue;
+    let info;
+    try {
+      info = await svnInfo(sctx, wc);
+    } catch (error) {
+      if (error instanceof Cancelled) throw error;
+      info = void 0;
+    }
+    if (!info) {
+      notes.push(`${name}\uFF1A\u8BFB\u4E0D\u51FA svn info\uFF0C\u6682\u4E0D\u6821\u6B63`);
+      continue;
+    }
+    if (sameUrl(info.url, seen.url) || sameUrl(info.url, branchUrl(pool.config, seen.branch))) continue;
+    const url = info.url;
+    const actual = branchFromUrl(pool.config, url) ?? "";
+    const oldLink = branchLink(pool.paths, seen.branch);
+    try {
+      if (linkExists(oldLink) && samePath(linkTarget(oldLink), wc)) removeLink(oldLink);
+    } catch (error) {
+      notes.push(`${seen.id}\uFF1A\u5220\u9664\u65E7\u5165\u53E3 branch/${branchDirName(seen.branch)} \u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`);
+    }
+    const result = await mutate(pool.paths, (state) => {
+      const slot = state.slots.find((s) => s.id === seen.id);
+      if (!same(slot)) return "";
+      const other = actual ? state.slots.find((s) => s.id !== seen.id && (s.branch === actual || s.op?.target === actual)) : void 0;
+      slot.url = url;
+      slot.behind = void 0;
+      if (other) {
+        slot.branch = "";
+        slot.phase = "blocked";
+        slot.blockedReason = `\u88AB\u6C60\u5916\u5207\u6362\u5230 ${actual}\uFF0C\u4F46 ${actual} \u5DF2\u5728 ${other.id} \u4E0A\uFF1B\u8BF7\u628A\u5176\u4E2D\u4E00\u4E2A\u5207\u56DE\u539F\u5206\u652F\uFF0C\u6216\u89E3\u9664\u4FDD\u62A4\u540E\u4EA4\u7ED9\u6C60\u56DE\u6536`;
+        return `${name}\uFF1A\u88AB\u6C60\u5916\u5207\u6362\u5230 ${actual}\uFF0C\u4E0E ${other.id} \u91CD\u590D\uFF0C\u5DF2\u6807\u4E3A\u963B\u585E`;
+      }
+      slot.branch = actual;
+      return `${name}\uFF1A\u88AB\u6C60\u5916\u5207\u6362\u5230 ${actual || url}\uFF0C\u5DF2\u6309\u5B9E\u9645${actual ? `\u5206\u652F ${actual} ` : "\u60C5\u51B5\uFF08\u4E0D\u7B26\u5408\u5206\u652F\u89C4\u5219\uFF0C\u8BB0\u4E3A\u672A\u5B9A\uFF09"}\u8BB0\u5F55`;
+    });
+    if (result) notes.push(result);
+  }
+  notes.push(...syncLinks(pool));
+  return notes;
+}
+function claimSlot(state, config, branch, lease, now, allocate, excluded = /* @__PURE__ */ new Set()) {
   const existing = state.slots.find((s) => s.branch === branch && (s.phase === "ready" || s.phase === "blocked") && !s.op);
   if (existing) {
     if (lease) existing.lease = laterLease(leaseActive(existing.lease, now) ? existing.lease : null, lease);
@@ -3701,20 +3830,22 @@ function claimSlot(state, config, branch, lease, now, excluded = /* @__PURE__ */
   }
   const moving = state.slots.find((s) => s.op && (s.op.target === branch || s.branch === branch) && pidAlive(s.op.pid));
   if (moving) return { kind: "busy", slot: { ...moving } };
-  const idle = state.slots.filter((s) => isIdle(s, config, now) && !s.op && !excluded.has(s.id)).sort((a, b) => (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || a.id.localeCompare(b.id));
+  const idle = state.slots.filter((s) => isIdle(s, now) && !s.op && !excluded.has(s.id)).sort((a, b) => (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || a.id.localeCompare(b.id));
   const op = (kind, from) => ({ kind, target: branch, pid: process.pid, at: now.toISOString(), lease, from });
-  if (idle.length > 0) {
-    const slot = idle[0];
+  const switchTo = (slot) => {
     slot.phase = "switching";
     slot.op = op("switch", slot.branch);
     return { kind: "switch", slot: { ...slot } };
-  }
+  };
+  const spare = idle.find((s) => !isProject(s, config));
+  if (spare) return switchTo(spare);
   if (state.slots.length < config.maxSlots) {
-    const slot = { id: nextSlotId(state), branch: "", url: "", phase: "switching", lease: null, op: op("create") };
-    if (allocate) slot.path = allocate(slot.id);
+    const id = nextSlotId(state);
+    const slot = { id, path: allocate(id), branch: "", url: "", phase: "switching", lease: null, op: op("create") };
     state.slots.push(slot);
     return { kind: "create", slot: { ...slot } };
   }
+  if (idle.length > 0) return switchTo(idle[0]);
   return { kind: "full", slots: state.slots.map((s) => ({ ...s })) };
 }
 function describeFull(pool, slots) {
@@ -3744,14 +3875,14 @@ async function obtain(pool, branch, lease) {
       branch,
       lease,
       now,
-      skipped,
-      (id) => selectSlotPath(pool.paths, state, id, pool.config.storage)
+      (id) => selectSlotPath(pool.paths, state, id, pool.config.storage),
+      skipped
     ));
     if (claim.kind === "full") throw new Error(describeFull(pool, claim.slots));
     if (claim.kind === "busy") throw new Error(`${branch} \u6B63\u5728 ${claim.slot.id} \u4E0A\u88AB\u53E6\u4E00\u4E2A\u4EFB\u52A1\u5904\u7406\uFF0C\u7A0D\u540E\u518D\u8BD5`);
     if (claim.kind === "hit") {
       const wc2 = slotDir(pool.paths, claim.slot);
-      if (claim.slot.path) assertStorageParent(wc2);
+      assertStorageParent(wc2);
       restoreLink(pool, claim.slot);
       if (claim.slot.phase === "blocked") notes.push(`\u6CE8\u610F\uFF1A${claim.slot.id} \u5904\u4E8E\u963B\u585E\uFF08${claim.slot.blockedReason ?? "\u539F\u56E0\u672A\u8BB0\u5F55"}\uFF09\uFF0C\u8BF7\u5148\u5904\u7406`);
       const behind2 = await behindCount(sctx, wc2).catch(() => void 0);
@@ -3804,13 +3935,11 @@ async function switchFlow(pool, claimed, branch, url, notes) {
     const fresh = findSlot(readState(pool.paths), claimed.id);
     restoreLink(pool, fresh);
   };
-  if (claimed.path) {
-    try {
-      assertStorageParent(wc);
-    } catch (error) {
-      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+  try {
+    assertStorageParent(wc);
+  } catch (error) {
+    await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
   stage(pool, `${claimed.id}\uFF1A${from || "(\u672A\u5B9A)"} \u2192 ${branch}`);
   if (from) {
@@ -3866,7 +3995,7 @@ async function createFlow(pool, claimed, branch, url, notes) {
   let created = false;
   stage(pool, `${claimed.id}\uFF1A\u65B0\u5EFA ${branch}${isFullCheckout(spec) ? "" : `\uFF08${describeSparse(spec)[0]}\uFF09`}\uFF0C\u5B9E\u9645\u76EE\u5F55 ${wc}`);
   try {
-    checkCreationSpace(wc, pool.config.storage.minFreeGiB);
+    checkCreationSpace(wc, minFreeFor(pool.config.storage, wc));
     mkdirSync7(wc);
     created = true;
     await mutate(pool.paths, (state) => {
@@ -3936,6 +4065,8 @@ function realPath(p) {
 }
 async function holdSlot(pool, branch, holdId, expectedPath, label) {
   if (!path13.isAbsolute(expectedPath)) throw new UsageError(`expectedPath \u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${expectedPath}`);
+  const ids = new Set(readState(pool.paths).slots.filter((s) => s.branch === branch).map((s) => s.id));
+  if (ids.size) await reconcile(pool, ids);
   const now = pool.now();
   return mutate(pool.paths, (state) => {
     const slot = state.slots.find((s) => s.branch === branch);
@@ -3959,7 +4090,7 @@ async function holdSlot(pool, branch, holdId, expectedPath, label) {
       slot: slot.id,
       renewed,
       holders,
-      detail: `${renewed ? "\u5DF2\u5237\u65B0" : "\u5DF2\u5EFA\u7ACB"} ${branch}\uFF08${slot.id}\uFF09\u7684\u4FDD\u62A4 ${holdId}\uFF1B\u5F53\u524D ${holders} \u4E2A\u6301\u6709\u8005\uFF0C\u5207\u6362\u3001\u7F29\u5BB9\u3001\u5E38\u9A7B\u66F4\u65B0\u90FD\u4F1A\u8DF3\u8FC7\u8FD9\u4E2A\u69FD\u4F4D`
+      detail: `${renewed ? "\u5DF2\u5237\u65B0" : "\u5DF2\u5EFA\u7ACB"} ${branch}\uFF08${slot.id}\uFF09\u7684\u4FDD\u62A4 ${holdId}\uFF1B\u5F53\u524D ${holders} \u4E2A\u6301\u6709\u8005\uFF0C\u5207\u6362\u3001\u7F29\u5BB9\u3001refresh \u66F4\u65B0\u90FD\u4F1A\u8DF3\u8FC7\u8FD9\u4E2A\u69FD\u4F4D`
     };
   });
 }
@@ -3967,8 +4098,10 @@ async function unholdSlot(pool, branch, holdId, confirmClosed, releaseLease) {
   if (!confirmClosed) throw new UsageError("\u89E3\u9664\u4FDD\u62A4\u524D\u987B\u786E\u8BA4\u7528\u5230\u8BE5\u5DE5\u4F5C\u526F\u672C\u7684\u5E94\u7528\u5DF2\u5173\u95ED\uFF08--confirm-closed\uFF09");
   const now = pool.now();
   const result = await mutate(pool.paths, (state) => {
-    const slot = state.slots.find((s) => s.branch === branch);
+    const has = (s) => Boolean(s.holds) && Object.prototype.hasOwnProperty.call(s.holds, holdId);
+    const slot = state.slots.find((s) => s.branch === branch && has(s)) ?? state.slots.find(has) ?? state.slots.find((s) => s.branch === branch);
     if (!slot) return { removed: false, leaseReleased: false, holders: 0, detail: `${branch} \u4E0D\u5728\u6C60\u91CC\uFF0C\u65E0\u9700\u89E3\u9664` };
+    const label = slot.branch === branch ? branch : `${branch}\uFF08\u73B0\u4E3A ${slot.branch || "\u672A\u5B9A"}\uFF09`;
     const holds = slot.holds ?? {};
     const removed = Object.prototype.hasOwnProperty.call(holds, holdId);
     if (removed) delete holds[holdId];
@@ -3976,7 +4109,7 @@ async function unholdSlot(pool, branch, holdId, confirmClosed, releaseLease) {
     const leaseReleased = releaseLease && leaseActive(slot.lease, now);
     if (releaseLease) slot.lease = null;
     const holders = Object.keys(holds).length;
-    const parts = [removed ? `\u5DF2\u89E3\u9664 ${branch}\uFF08${slot.id}\uFF09\u7684\u4FDD\u62A4 ${holdId}` : `${branch}\uFF08${slot.id}\uFF09\u4E0A\u6CA1\u6709 ${holdId} \u7684\u4FDD\u62A4`];
+    const parts = [removed ? `\u5DF2\u89E3\u9664 ${label}\uFF08${slot.id}\uFF09\u7684\u4FDD\u62A4 ${holdId}` : `${label}\uFF08${slot.id}\uFF09\u4E0A\u6CA1\u6709 ${holdId} \u7684\u4FDD\u62A4`];
     if (releaseLease) parts.push(leaseReleased ? "\u5DF2\u91CA\u653E\u79DF\u7EA6" : "\u6CA1\u6709\u6709\u6548\u79DF\u7EA6");
     parts.push(holders ? `\u4ECD\u6709 ${holders} \u4E2A\u6301\u6709\u8005\uFF08${holdNames(slot)}\uFF09\uFF0C\u7EE7\u7EED\u53D7\u4FDD\u62A4` : "\u69FD\u4F4D\u5DF2\u4E0D\u53D7\u4FDD\u62A4");
     return { slot: slot.id, removed, leaseReleased, holders, detail: parts.join("\uFF1B") };
@@ -3994,7 +4127,7 @@ async function gc2(pool) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${slot.blockedReason ?? "\u76EE\u5F55\u6240\u6709\u6743\u9700\u8981\u4EBA\u5DE5\u786E\u8BA4"}`);
         continue;
       }
-      if (slot.path) assertStorageParent(wc);
+      assertStorageParent(wc);
       const info = await svnInfo(sctx, wc);
       if (!info) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A\u5DE5\u4F5C\u526F\u672C\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u4FDD\u7559\u963B\u585E\u4E0E\u8BB0\u5F55`);
@@ -4005,17 +4138,25 @@ async function gc2(pool) {
         report.blocked.push(`${slot.id} ${slot.branch}\uFF1A${st.problems.join("\uFF1B") || "\u5DE5\u4F5C\u526F\u672C\u88AB\u9501"}`);
         continue;
       }
-      await mutate(pool.paths, (state) => {
+      const outcome = await mutate(pool.paths, (state) => {
         const s = state.slots.find((x) => x.id === slot.id);
-        if (!s || s.phase !== "blocked" || s.op) return;
+        if (!s || s.phase !== "blocked" || s.op) return void 0;
+        const actual = st.incomplete ? "" : branchFromUrl(pool.config, info.url) ?? "";
+        const other = actual ? state.slots.find((x) => x.id !== s.id && (x.branch === actual || x.op?.target === actual)) : void 0;
+        s.url = info.url;
+        if (other) {
+          s.branch = "";
+          s.blockedReason = `\u5DE5\u4F5C\u526F\u672C\u5728 ${actual} \u4E0A\uFF0C\u4F46 ${actual} \u5DF2\u5728 ${other.id} \u4E0A\uFF1B\u8BF7\u628A\u5176\u4E2D\u4E00\u4E2A\u5207\u56DE\u539F\u5206\u652F\uFF0C\u6216\u89E3\u9664\u4FDD\u62A4\u540E\u4EA4\u7ED9\u6C60\u56DE\u6536`;
+          return { blocked: s.blockedReason };
+        }
         s.phase = "ready";
         s.blockedReason = void 0;
-        if (info) {
-          s.url = info.url;
-          s.branch = st.incomplete ? "" : branchFromUrl(pool.config, info.url) ?? "";
-        }
+        s.branch = actual;
+        return { branch: actual };
       });
-      report.unblocked.push(`${slot.id} ${slot.branch}`);
+      if (!outcome) continue;
+      if ("blocked" in outcome) report.blocked.push(`${slot.id} (\u672A\u5B9A)\uFF1A${outcome.blocked}`);
+      else report.unblocked.push(`${slot.id} ${outcome.branch || "(\u672A\u5B9A)"}`);
     } catch (error) {
       if (error instanceof Cancelled) throw error;
       report.errors.push(`${slot.id} \u590D\u67E5\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`);
@@ -4026,7 +4167,7 @@ async function gc2(pool) {
     const now = pool.now();
     const pick = await mutate(pool.paths, (state) => {
       if (state.slots.length <= pool.config.maxSlots) return void 0;
-      const idle = state.slots.filter((s) => isIdle(s, pool.config, now) && !s.op && !tried.has(s.id)).sort((a, b) => (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || b.id.localeCompare(a.id));
+      const idle = state.slots.filter((s) => isIdle(s, now) && !s.op && !tried.has(s.id)).sort((a, b) => Number(isProject(a, pool.config)) - Number(isProject(b, pool.config)) || (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || b.id.localeCompare(a.id));
       if (idle.length === 0) return { none: state.slots.length - pool.config.maxSlots };
       const slot = idle[0];
       slot.phase = "retiring";
@@ -4060,13 +4201,11 @@ async function retireSlot(pool, claimed) {
     });
     restoreLink(pool, findSlot(readState(pool.paths), claimed.id));
   };
-  if (claimed.path) {
-    try {
-      assertStorageParent(wc);
-    } catch (error) {
-      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+  try {
+    assertStorageParent(wc);
+  } catch (error) {
+    await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
   if (claimed.branch) {
     const link = branchLink(pool.paths, claimed.branch);
@@ -4104,7 +4243,9 @@ function syncLinks(pool) {
   const wanted = /* @__PURE__ */ new Map();
   for (const slot of state.slots) {
     if (!slot.branch || slot.op || slot.phase !== "ready" && slot.phase !== "blocked") continue;
-    wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot));
+    const dir = slotDir(pool.paths, slot);
+    if (!existsSync9(dir)) continue;
+    wanted.set(branchDirName(slot.branch), dir);
   }
   const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
   if (existsSync9(pool.paths.branch)) {
@@ -4163,7 +4304,7 @@ function prunePatches(pool) {
 async function refresh2(pool) {
   const recovered = await recover(pool);
   const items = [];
-  for (const branch of pool.config.resident) {
+  for (const branch of pool.config.projects) {
     try {
       items.push(await refreshOne(pool, branch));
     } catch (error) {
@@ -4189,22 +4330,12 @@ async function refreshOne(pool, branch) {
     return { kind: "update", slot: { ...slot } };
   });
   if (claim.kind === "skip") return { branch, ok: true, skipped: true, detail: `\u8DF3\u8FC7\uFF1A${claim.why}` };
-  if (claim.kind === "absent") {
-    try {
-      const outcome = await obtain(pool, branch, null);
-      return { branch, ok: true, detail: `\u5DF2\u51C6\u5907\uFF08${outcome.slot}\uFF0C${outcome.mode === "create" ? "\u65B0\u5EFA" : "\u5207\u6362"}\uFF09${outcome.notes.length ? `\uFF1A${outcome.notes.join("\uFF1B")}` : ""}` };
-    } catch (error) {
-      if (error instanceof Cancelled) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("\u6C60\u6EE1")) return { branch, ok: false, detail: "\u672A\u5C31\u7EEA\uFF1A\u6C60\u6EE1" };
-      throw error;
-    }
-  }
+  if (claim.kind === "absent") return { branch, ok: true, skipped: true, detail: "\u8DF3\u8FC7\uFF1A\u672A\u6302\u69FD\uFF08\u6309\u9700\u5360\u7528\u65F6\u5206\u914D\uFF09" };
   const wc = slotDir(pool.paths, claim.slot);
   const sctx = svnCtx(pool);
   stage(pool, `\u66F4\u65B0 ${branch}\uFF08${claim.slot.id}\uFF09`);
   try {
-    if (claim.slot.path) assertStorageParent(wc);
+    assertStorageParent(wc);
     if (pool.config.hooks?.beforeUpdate) {
       if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("\u6709 SVN \u8FDB\u7A0B\u6B63\u5728\u5904\u7406\u69FD\u4F4D\uFF0C\u672A\u6267\u884C\u9879\u76EE\u94A9\u5B50");
       await releaseSlotOccupants(pool, wc);
@@ -4333,9 +4464,6 @@ function slotHint(view, now) {
     case "occupied":
       parts.push(`\u5DF2\u5360\u7528${describeLease(view.lease, now)}`);
       break;
-    case "resident":
-      parts.push("\u5E38\u9A7B\uFF0C\u5C31\u7EEA");
-      break;
     case "held":
       parts.push(`\u53D7\u4FDD\u62A4\uFF08${view.holds.map((h) => h.label ?? h.id).join("\u3001")}\uFF09`);
       if (view.lease) parts.push(`\u5DF2\u5360\u7528${describeLease(view.lease, now)}`);
@@ -4360,8 +4488,10 @@ function slotHint(view, now) {
   return parts.join("\uFF0C");
 }
 function missHint(state, config, now) {
-  if (state.slots.some((s) => isIdle(s, config, now) && !s.op)) return "\u9700\u5207\u6362";
+  const idle = state.slots.filter((s) => isIdle(s, now) && !s.op);
+  if (idle.some((s) => !isProject(s, config))) return "\u9700\u5207\u6362";
   if (state.slots.length < config.maxSlots) return "\u9700\u65B0\u5EFA\u69FD\u4F4D";
+  if (idle.length > 0) return "\u9700\u5207\u6362\uFF08\u4F1A\u6362\u51FA\u5DE5\u7A0B\u69FD\u4F4D\uFF09";
   return "\u6C60\u6EE1\uFF0C\u9700\u5148\u91CA\u653E";
 }
 function mergeCandidates(input) {
@@ -4377,7 +4507,7 @@ function mergeCandidates(input) {
   const known = new Set(remote.map((r) => r.branch));
   const unchecked = remoteError ? "\uFF08\u8FDC\u7AEF\u4E0D\u53EF\u8FBE\uFF0C\u672A\u6838\u5BF9\uFF09" : "";
   for (const view of views) if (view.branch) push({ value: view.branch, hint: slotHint(view, now) });
-  for (const branch of config.resident) push({ value: branch, hint: `\u5E38\u9A7B\uFF0C${miss}` });
+  for (const branch of config.projects) push({ value: branch, hint: `\u5DE5\u7A0B\u6E05\u5355\uFF0C${miss}` });
   for (const branch of recent) {
     const gone = !remoteError && remote.length > 0 && config.branches.listFrom.length > 0 && !known.has(branch) && !config.aliases[branch];
     push({ value: branch, hint: `\u6700\u8FD1\u4F7F\u7528\uFF0C${miss}${gone ? "\uFF08listFrom \u4E0B\u6CA1\u627E\u5230\uFF0C\u53EF\u80FD\u5DF2\u5220\u9664\uFF09" : unchecked}` });
@@ -4444,9 +4574,9 @@ async function status2(pool) {
   \u5B9E\u9645\u76EE\u5F55\uFF1A${v.path}`;
   });
   const count = (s) => view.slots.filter((v) => v.state === s).length;
-  const summary = `${view.slots.length}/${view.maxSlots} \u4E2A\u69FD\u4F4D\uFF1A\u5360\u7528 ${count("occupied")}\uFF0C\u5E38\u9A7B ${count("resident")}\uFF0C\u7A7A\u95F2 ${count("idle")}${count("held") ? `\uFF0C\u4FDD\u62A4 ${count("held")}` : ""}${count("blocked") ? `\uFF0C\u963B\u585E ${count("blocked")}` : ""}${count("interrupted") ? `\uFF0C\u4E2D\u65AD ${count("interrupted")}` : ""}`;
-  const missingResident = view.resident.filter((b) => !view.slots.some((v) => v.branch === b));
-  if (missingResident.length) lines.push(`\u5E38\u9A7B\u5206\u652F\u4E0D\u5728\u6C60\u91CC\uFF1A${missingResident.join("\u3001")}\uFF08\u4E0B\u6B21 refresh \u51C6\u5907\uFF09`);
+  const summary = `${view.slots.length}/${view.maxSlots} \u4E2A\u69FD\u4F4D\uFF1A\u5360\u7528 ${count("occupied")}\uFF0C\u7A7A\u95F2 ${count("idle")}${count("held") ? `\uFF0C\u4FDD\u62A4 ${count("held")}` : ""}${count("blocked") ? `\uFF0C\u963B\u585E ${count("blocked")}` : ""}${count("interrupted") ? `\uFF0C\u4E2D\u65AD ${count("interrupted")}` : ""}`;
+  const unmounted = view.projects.filter((b) => !view.slots.some((v) => v.branch === b));
+  if (unmounted.length) lines.push(`\u5DE5\u7A0B\u672A\u6302\u69FD\uFF1A${unmounted.join("\u3001")}\uFF08\u6253\u5F00\u65F6\u6309\u9700\u5206\u914D\uFF09`);
   if (skipped) lines.push(`${skipped} \u4E2A\u69FD\u4F4D\u8D85\u51FA\u7EDF\u8BA1\u65F6\u95F4\uFF0C\u672A\u8BFB\u6539\u52A8`);
   return {
     summary,
@@ -4529,7 +4659,7 @@ async function runAcquire(params, ctx) {
   const wc = view.slots.find((s) => s.id === outcome.slot)?.path ?? "";
   const lines = [summary, `\u5165\u53E3\uFF1A${entry}`, `\u5B9E\u9645\u76EE\u5F55\uFF1A${wc}`];
   if (outcome.notes.length) lines.push(...outcome.notes);
-  if (recovered.length) lines.push(`\u4E2D\u65AD\u6062\u590D\uFF1A${recovered.join("\uFF1B")}`);
+  if (recovered.length) lines.push(`\u6062\u590D\u4E0E\u6821\u6B63\uFF1A${recovered.join("\uFF1B")}`);
   return { detail: lines.join("\n"), code: 0, summary, pool: view };
 }
 async function runGc(ctx) {
@@ -4539,7 +4669,7 @@ async function runGc(ctx) {
   const section = (title, items) => {
     if (items.length) lines.push(`${title}\uFF1A`, ...items.map((s) => `  ${s}`));
   };
-  section("\u4E2D\u65AD\u6062\u590D", report.recovered);
+  section("\u6062\u590D\u4E0E\u6821\u6B63", report.recovered);
   section("\u89E3\u9664\u963B\u585E", report.unblocked);
   section("\u4ECD\u963B\u585E", report.blocked);
   section("\u5DF2\u56DE\u6536", report.retired);
@@ -4552,15 +4682,15 @@ async function runGc(ctx) {
 }
 async function runRefresh(ctx) {
   const pool = openPool(ctx);
-  if (pool.config.resident.length === 0) {
+  if (pool.config.projects.length === 0) {
     const recovered = await recover(pool);
-    return { detail: `pool.toml \u6CA1\u6709\u5E38\u9A7B\u5206\u652F${recovered.length ? `\uFF1B\u4E2D\u65AD\u6062\u590D\uFF1A${recovered.join("\uFF1B")}` : ""}`, code: 0, skipped: true };
+    return { detail: `pool.toml \u7684 projects \u4E3A\u7A7A\uFF0C\u6CA1\u6709\u8981\u66F4\u65B0\u7684\u5DE5\u7A0B${recovered.length ? `\uFF1B\u6062\u590D\u4E0E\u6821\u6B63\uFF1A${recovered.join("\uFF1B")}` : ""}`, code: 0, skipped: true };
   }
   const result = await refresh2(pool);
   const failed = result.items.filter((i) => !i.ok);
   const lines = result.items.map((i) => `${i.ok ? i.skipped ? "-" : "\u2713" : "\u2717"} ${i.branch}\uFF1A${i.detail}`);
-  if (result.recovered.length) lines.push(`\u4E2D\u65AD\u6062\u590D\uFF1A${result.recovered.join("\uFF1B")}`);
-  const summary = `\u5E38\u9A7B ${result.items.length} \u4E2A\uFF1A\u6210\u529F ${result.items.filter((i) => i.ok && !i.skipped).length}\uFF0C\u8DF3\u8FC7 ${result.items.filter((i) => i.skipped).length}\uFF0C\u5931\u8D25 ${failed.length}`;
+  if (result.recovered.length) lines.push(`\u6062\u590D\u4E0E\u6821\u6B63\uFF1A${result.recovered.join("\uFF1B")}`);
+  const summary = `\u5DE5\u7A0B ${result.items.length} \u4E2A\uFF1A\u66F4\u65B0 ${result.items.filter((i) => i.ok && !i.skipped).length}\uFF0C\u8DF3\u8FC7 ${result.items.filter((i) => i.skipped).length}\uFF0C\u5931\u8D25 ${failed.length}`;
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
 async function runCaptureSparse(params, ctx) {
@@ -4584,15 +4714,15 @@ function dryRun(displayName, toolId, params, ctx) {
   const config = loadConfig(root);
   const lines = [head, `\u6C60\u6839 ${root}\uFF0C\u6700\u591A ${config.maxSlots} \u4E2A\u69FD\u4F4D`];
   if (toolId === "acquire" || toolId === "refresh") {
-    lines.push(config.storage.roots.length ? `\u65B0\u69FD\u4F4D\u5019\u9009\u76EE\u5F55\uFF1A${config.storage.roots.join("\u3001")}\uFF08\u7A7A\u95F4\u6700\u591A\u7684\u5408\u683C\u76EE\u5F55\u4F18\u5148\uFF09` : `\u65B0\u69FD\u4F4D\u76EE\u5F55\uFF1A${path15.join(root, "slots")}`);
-    lines.push(`\u65B0\u5EFA\u51C6\u5165\uFF1A\u81F3\u5C11 ${config.storage.minFreeGiB} GiB \u53EF\u7528\u7A7A\u95F4\uFF1B\u73B0\u6709\u69FD\u4F4D\u4E0D\u642C\u8FC1`);
+    lines.push(`\u65B0\u69FD\u4F4D\u5019\u9009\u76EE\u5F55\uFF08\u7A7A\u95F4\u6700\u591A\u7684\u5408\u683C\u76EE\u5F55\u4F18\u5148\uFF09\uFF1A${config.storage.roots.map((r) => `${r.path}\uFF08\u81F3\u5C11 ${r.minFreeGiB} GiB\uFF09`).join("\u3001")}`);
+    lines.push("\u73B0\u6709\u69FD\u4F4D\u4E0D\u642C\u8FC1\uFF1B\u6C60\u5B9A\u4E49\u76EE\u5F55\u91CC\u4E0D\u653E\u69FD\u4F4D");
   }
   if (toolId === "acquire") {
     lines.push(`\u5206\u652F URL\uFF1A${branchUrl(config, String(params.branch))}`);
     lines.push(`\u4FDD\u7559\uFF1A${typeof params.ttl === "string" && params.ttl ? params.ttl : config.defaultTtl}${params.tag ? `\uFF0C\u6807\u7B7E ${params.tag}` : ""}`);
     lines.push(...sparsePlan(config));
   } else if (toolId === "refresh") {
-    lines.push(config.resident.length ? `\u5E38\u9A7B\u5206\u652F\uFF1A${config.resident.join("\u3001")}` : "\u6CA1\u6709\u5E38\u9A7B\u5206\u652F");
+    lines.push(config.projects.length ? `\u5DE5\u7A0B\u6E05\u5355\uFF1A${config.projects.join("\u3001")}\uFF08\u53EA\u66F4\u65B0\u5DF2\u6302\u69FD\u7684\uFF0C\u672A\u6302\u69FD\u7684\u8DF3\u8FC7\uFF09` : "projects \u4E3A\u7A7A\uFF0C\u6CA1\u6709\u8981\u66F4\u65B0\u7684\u5DE5\u7A0B");
     lines.push(...sparsePlan(config));
   } else if (toolId === "gc") {
     lines.push(`\u8D85\u8FC7 ${config.maxSlots} \u4E2A\u69FD\u4F4D\u65F6\u56DE\u6536\u7A7A\u95F2\u69FD\u4F4D\uFF1B\u5220\u9664 ${config.patchRetentionDays} \u5929\u524D\u7684\u5B58\u6863`);

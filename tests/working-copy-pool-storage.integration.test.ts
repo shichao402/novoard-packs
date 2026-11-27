@@ -15,6 +15,8 @@ function sh(cmd: string, args: string[]): string {
   return result.stdout;
 }
 const deadPid = (): number => spawnSync(process.execPath, ["-e", ""]).pid!;
+type Root = string | { path: string; minFreeGiB: number };
+const rootToml = (r: Root): string => (typeof r === "string" ? JSON.stringify(r) : `{ path = ${JSON.stringify(r.path)}, minFreeGiB = ${r.minFreeGiB} }`);
 
 describe.skipIf(!hasSvn)("多盘存储生命周期（真实 file:// SVN）", () => {
   let base: string;
@@ -39,10 +41,10 @@ describe.skipIf(!hasSvn)("多盘存储生命周期（真实 file:// SVN）", () 
     const a = `${root}-disk-a`;
     const b = `${root}-disk-b`;
     for (const p of [root, a, b]) mkdirSync(p);
-    const config = (maxSlots = 2, resident: string[] = [], roots?: string[], minFreeGiB = 0): void => {
+    const config = (maxSlots = 2, projects: string[] = [], roots: Root[] = [a], minFreeGiB = 0): void => {
       writeFileSync(path.join(root, "pool.toml"), [
-        `maxSlots = ${maxSlots}`, `svnRoot = ${JSON.stringify(url)}`, `resident = ${JSON.stringify(resident)}`,
-        ...(roots ? ["[storage]", `roots = ${JSON.stringify(roots)}`, `minFreeGiB = ${minFreeGiB}`] : []), "",
+        `maxSlots = ${maxSlots}`, `svnRoot = ${JSON.stringify(url)}`, `projects = ${JSON.stringify(projects)}`,
+        "[storage]", `roots = [${roots.map(rootToml).join(", ")}]`, `minFreeGiB = ${minFreeGiB}`, "",
       ].join("\n"));
     };
     config();
@@ -56,38 +58,36 @@ describe.skipIf(!hasSvn)("多盘存储生命周期（真实 file:// SVN）", () 
     return { root, a, b, config, ctx, call, state, save };
   }
 
-  it("旧槽位原地保留，新增外置槽位，改 roots 后命中与更新仍用记录中的目录", async () => {
+  it("槽位放在池外；改 roots 后命中与更新仍用记录中的目录", async () => {
     const f = fixture();
+    f.config(2, ["b1", "b2"], [f.a]);
     await f.call("acquire", { branch: "b1" });
-    const legacy = path.join(f.root, "slots", "s01");
-    const old = f.state();
-    delete old.slots[0].path;
-    f.save(old);
-    f.config(2, ["b1"], [f.a]);
+    const first = path.join(f.a, "s01");
+    f.config(2, ["b1", "b2"], [f.b]);
     const created = await f.call("acquire", { branch: "b2" });
-    const external = path.join(f.a, "s02");
-    expect(created.detail).toContain(`实际目录：${external}`);
-    expect(f.state().slots[0].path).toBeUndefined();
-    expect(f.state().slots[1].path).toBe(external);
-    expect(existsSync(legacy)).toBe(true);
-    expect(existsSync(path.join(f.root, "slots", "s02"))).toBe(false);
-    expect(realpathSync(path.join(f.root, "branch", "b2"))).toBe(external);
+    const second = path.join(f.b, "s02");
+    expect(created.detail).toContain(`实际目录：${second}`);
+    expect(f.state().slots.map((s) => s.path)).toEqual([first, second]);
+    expect(existsSync(path.join(f.root, "slots"))).toBe(false);
+    expect(realpathSync(path.join(f.root, "branch", "b1"))).toBe(first);
+    expect(realpathSync(path.join(f.root, "branch", "b2"))).toBe(second);
 
-    f.config(2, ["b2"], [f.b]);
-    const hit = await f.call("acquire", { branch: "b2" });
+    const hit = await f.call("acquire", { branch: "b1" });
     expect(hit.summary).toContain("已在池中");
-    expect(hit.detail).toContain(external);
-    await f.call("release", { branch: "b2" });
+    expect(hit.detail).toContain(first);
+    for (const branch of ["b1", "b2"]) await f.call("release", { branch });
     const refresh = await f.call("refresh");
     expect(refresh.code).toBe(0);
+    expect(refresh.detail).toContain("b1：已更新（s01");
     expect(refresh.detail).toContain("b2：已更新（s02");
     const status = await f.call("status");
-    expect(status.detail).toContain(`实际目录：${external}`);
-    expect((status.pool as { slots: { path: string }[] }).slots.map((s) => s.path)).toEqual([legacy, external]);
-    expect(existsSync(path.join(f.b, "s02"))).toBe(false);
+    expect(status.detail).toContain(`实际目录：${first}`);
+    expect((status.pool as { projects: string[]; slots: { path: string }[] }).projects).toEqual(["b1", "b2"]);
+    expect((status.pool as { slots: { path: string }[] }).slots.map((s) => s.path)).toEqual([first, second]);
+    expect(existsSync(path.join(f.b, "s01"))).toBe(false);
   }, 120_000);
 
-  it("外置槽位切换、存档和缩容都操作实际目录，只删自己的槽位", async () => {
+  it("外置槽位切换、存档和缩容都操作实际目录；缩容先回收不在工程清单里的", async () => {
     const f = fixture();
     f.config(1, [], [f.a]);
     await f.call("acquire", { branch: "b1" });
@@ -113,17 +113,19 @@ describe.skipIf(!hasSvn)("多盘存储生命周期（真实 file:// SVN）", () 
     const gc = await f.call("gc");
     expect(gc.detail).toContain("已删除 s02（b3）");
     expect(existsSync(removed)).toBe(false);
+    expect(existsSync(path.join(f.root, "branch", "b3"))).toBe(false);
     expect(existsSync(external)).toBe(true);
     expect(readFileSync(sibling, "utf8")).toBe("keep");
     expect(f.state().slots).toHaveLength(1);
   }, 180_000);
 
-  it("容量不足和目录碰撞不启动检出，也不残留槽位记录", async () => {
+  it("容量不足和目录碰撞不启动检出，也不残留槽位记录；单独下限只约束自己的目录", async () => {
     const f = fixture();
     f.config(1, [], [f.a], 1_000_000);
     await expect(f.call("acquire", { branch: "b1" })).rejects.toThrow(/没有可用的槽位存储目录/);
     expect(f.state().slots).toEqual([]);
     expect(existsSync(path.join(f.a, "s01"))).toBe(false);
+
     f.config(1, [], [f.a]);
     const wc = path.join(f.a, "s01");
     mkdirSync(wc);
@@ -131,7 +133,11 @@ describe.skipIf(!hasSvn)("多盘存储生命周期（真实 file:// SVN）", () 
     await expect(f.call("acquire", { branch: "b1" })).rejects.toThrow(/不覆盖/);
     expect(f.state().slots).toEqual([]);
     expect(readFileSync(path.join(wc, "keep.txt"), "utf8")).toBe("keep");
-  }, 60_000);
+
+    f.config(1, [], [{ path: f.a, minFreeGiB: 1_000_000 }, f.b]);
+    const placed = await f.call("acquire", { branch: "b1" });
+    expect(placed.detail).toContain(`实际目录：${path.join(f.b, "s01")}`);
+  }, 90_000);
 
   it("分配后其他程序抢建同名目录时不覆盖、不删除", async () => {
     const f = fixture();

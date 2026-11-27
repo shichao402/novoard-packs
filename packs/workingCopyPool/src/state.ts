@@ -18,7 +18,7 @@ export type SlotOp = {
   target?: string;
   pid: number;
   at: string;
-  /** 完成后要写入的租约（acquire）；refresh 准备常驻分支时没有。 */
+  /** 完成后要写入的租约（acquire）；只准备不占用时没有。 */
   lease?: Lease | null;
   /** 切换前所在分支；释放占用失败时据此恢复。 */
   from?: string;
@@ -28,8 +28,8 @@ export type SlotOp = {
 
 export type Slot = {
   id: string;
-  /** 新建时固定的实际绝对路径；旧记录缺省为 <池根>/slots/<id>，不随配置迁移。 */
-  path?: string;
+  /** 新建时选定的实际绝对路径（在 [storage].roots 之一下面），不随配置迁移。 */
+  path: string;
   /** 当前所在分支；空串表示刚建或中断后状态不明，需要重新切换。 */
   branch: string;
   url: string;
@@ -44,7 +44,7 @@ export type Slot = {
   op?: SlotOp;
   /**
    * 持有保护（hold / unhold）：键为调用方给的 holdId。有任一持有时槽位不算空闲，
-   * 不会被切换、缩容或常驻更新；不随租约到期或进程退出消失，只能由对应 holdId 的 unhold 清除。
+   * 不会被切换、缩容或 refresh 更新；不随租约到期或进程退出消失，只能由对应 holdId 的 unhold 清除。
    */
   holds?: Record<string, Hold>;
 };
@@ -54,9 +54,9 @@ export type Hold = { at: string; label?: string; path: string };
 
 export type PoolState = { version: 1; slots: Slot[] };
 
+/** 池定义目录的布局：配置、状态、入口与存档；槽位本身不在这里。 */
 export type PoolPaths = {
   root: string;
-  slots: string;
   branch: string;
   patches: string;
   meta: string;
@@ -70,7 +70,6 @@ export function poolPaths(root: string): PoolPaths {
   const meta = path.join(root, ".pool");
   return {
     root,
-    slots: path.join(root, "slots"),
     branch: path.join(root, "branch"),
     patches: path.join(root, "patches"),
     meta,
@@ -82,9 +81,12 @@ export function poolPaths(root: string): PoolPaths {
 }
 
 export function slotDir(paths: PoolPaths, value: string | Pick<Slot, "id" | "path">): string {
-  const slot = typeof value === "string" ? readState(paths).slots.find((s) => s.id === value) ?? { id: value } : value;
+  const slot = typeof value === "string" ? readState(paths).slots.find((s) => s.id === value) : value;
+  if (!slot) throw new Error(`槽位 ${value as string} 不在状态文件里`);
   if (!/^s\d{2,3}$/.test(slot.id)) throw new Error(`槽位编号不合法：${slot.id}`);
-  if (slot.path === undefined) return path.join(paths.slots, slot.id);
+  if (slot.path === undefined || slot.path === null) {
+    throw new Error(`槽位 ${slot.id} 没有记录 path：池定义目录里的 slots/ 布局已不再支持，请在 ${paths.state} 里写入它的实际绝对目录，并把所在目录加进 [storage].roots`);
+  }
   if (typeof slot.path !== "string" || !path.isAbsolute(slot.path) || path.basename(path.normalize(slot.path)) !== slot.id
     || (process.platform === "win32" && !/^[a-z]:[\\/]/i.test(slot.path)) || /[\u0000-\u001f]/.test(slot.path)) {
     throw new Error(`槽位 ${slot.id} 的 path 必须是以槽位编号结尾的本机绝对目录`);
@@ -103,7 +105,7 @@ export function branchLink(paths: PoolPaths, branch: string): string {
 
 /** 第一次执行任何池工具时建出目录与状态文件（US1）。 */
 export function ensureLayout(paths: PoolPaths): void {
-  for (const dir of [paths.slots, paths.branch, paths.patches, paths.meta, paths.cache]) {
+  for (const dir of [paths.branch, paths.patches, paths.meta, paths.cache]) {
     mkdirSync(dir, { recursive: true });
   }
   if (!existsSync(paths.state)) {
@@ -232,18 +234,19 @@ export function leaseActive(lease: Lease | null | undefined, now: Date): boolean
   return Number.isFinite(until) && until > now.getTime();
 }
 
-export function isResident(slot: Slot, config: PoolConfig): boolean {
-  return Boolean(slot.branch) && config.resident.includes(slot.branch);
-}
-
 /** 槽位上有没有持有保护。 */
 export function isHeld(slot: Slot): boolean {
   return Boolean(slot.holds) && Object.keys(slot.holds!).length > 0;
 }
 
-/** 空闲是推导出来的：ready、不是常驻、没有有效租约、没有持有保护（租约过期不依赖 gc）。 */
-export function isIdle(slot: Slot, config: PoolConfig, now: Date): boolean {
-  return slot.phase === "ready" && !isResident(slot, config) && !leaseActive(slot.lease, now) && !isHeld(slot);
+/** 空闲是推导出来的：ready、没有有效租约、没有持有保护（租约过期不依赖 gc）。 */
+export function isIdle(slot: Slot, now: Date): boolean {
+  return slot.phase === "ready" && !leaseActive(slot.lease, now) && !isHeld(slot);
+}
+
+/** 槽位当前分支在不在工程清单里；换出空闲槽位时先换不在清单里的。 */
+export function isProject(slot: Slot, config: PoolConfig): boolean {
+  return Boolean(slot.branch) && config.projects.includes(slot.branch);
 }
 
 /** 进行中的操作是否已中断：有 op 且记录的进程已不存在。 */

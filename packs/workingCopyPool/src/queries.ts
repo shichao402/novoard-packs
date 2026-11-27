@@ -7,7 +7,7 @@ import path from "node:path";
 import type { Choice, ToolRunContext } from "../../../shared/types";
 import { branchFromPath, loadConfig, type PoolConfig } from "./config";
 import { describeLease, describeSlot, fmtTime, poolView, type Pool, type SlotView } from "./pool";
-import { isIdle, leaseActive, poolPaths, readState, recentBranches, type PoolState } from "./state";
+import { isIdle, isProject, leaseActive, poolPaths, readState, recentBranches, type PoolState } from "./state";
 import { Cancelled, svn, svnStatus, type SvnCtx } from "./svn";
 
 /** 远端列表缓存有效期（PRD：10 分钟内直接用缓存）。 */
@@ -121,9 +121,6 @@ function slotHint(view: SlotView, now: Date): string {
     case "occupied":
       parts.push(`已占用${describeLease(view.lease, now)}`);
       break;
-    case "resident":
-      parts.push("常驻，就绪");
-      break;
     case "held":
       parts.push(`受保护（${view.holds.map((h) => h.label ?? h.id).join("、")}）`);
       if (view.lease) parts.push(`已占用${describeLease(view.lease, now)}`);
@@ -148,15 +145,17 @@ function slotHint(view: SlotView, now: Date): string {
   return parts.join("，");
 }
 
-/** 不在池里的分支要切换还是新建：有空闲槽位就切换，没满就新建，否则池满。 */
+/** 不在池里的分支要切换还是新建，与选槽顺序一致：有不在工程清单里的空闲槽位就切换，没满就新建，再不行换出空闲工程槽位，否则池满。 */
 export function missHint(state: PoolState, config: PoolConfig, now: Date): string {
-  if (state.slots.some((s) => isIdle(s, config, now) && !s.op)) return "需切换";
+  const idle = state.slots.filter((s) => isIdle(s, now) && !s.op);
+  if (idle.some((s) => !isProject(s, config))) return "需切换";
   if (state.slots.length < config.maxSlots) return "需新建槽位";
+  if (idle.length > 0) return "需切换（会换出工程槽位）";
   return "池满，需先释放";
 }
 
 /**
- * 候选项合并（纯函数，单测用）：池中已有 → 常驻 → 最近使用 → listFrom 最近有提交的，按 value 去重。
+ * 候选项合并（纯函数，单测用）：池中已有 → 工程清单 → 最近使用 → listFrom 最近有提交的，按 value 去重。
  */
 export function mergeCandidates(input: {
   views: SlotView[];
@@ -180,7 +179,7 @@ export function mergeCandidates(input: {
   const unchecked = remoteError ? "（远端不可达，未核对）" : "";
 
   for (const view of views) if (view.branch) push({ value: view.branch, hint: slotHint(view, now) });
-  for (const branch of config.resident) push({ value: branch, hint: `常驻，${miss}` });
+  for (const branch of config.projects) push({ value: branch, hint: `工程清单，${miss}` });
   for (const branch of recent) {
     const gone = !remoteError && remote.length > 0 && config.branches.listFrom.length > 0 && !known.has(branch) && !config.aliases[branch];
     push({ value: branch, hint: `最近使用，${miss}${gone ? "（listFrom 下没找到，可能已删除）" : unchecked}` });
@@ -260,9 +259,9 @@ export async function status(pool: Pool): Promise<{ detail: string; summary: str
     return `${describeSlot(v, now)}${text}\n  实际目录：${v.path}`;
   });
   const count = (s: SlotView["state"]): number => view.slots.filter((v) => v.state === s).length;
-  const summary = `${view.slots.length}/${view.maxSlots} 个槽位：占用 ${count("occupied")}，常驻 ${count("resident")}，空闲 ${count("idle")}${count("held") ? `，保护 ${count("held")}` : ""}${count("blocked") ? `，阻塞 ${count("blocked")}` : ""}${count("interrupted") ? `，中断 ${count("interrupted")}` : ""}`;
-  const missingResident = view.resident.filter((b) => !view.slots.some((v) => v.branch === b));
-  if (missingResident.length) lines.push(`常驻分支不在池里：${missingResident.join("、")}（下次 refresh 准备）`);
+  const summary = `${view.slots.length}/${view.maxSlots} 个槽位：占用 ${count("occupied")}，空闲 ${count("idle")}${count("held") ? `，保护 ${count("held")}` : ""}${count("blocked") ? `，阻塞 ${count("blocked")}` : ""}${count("interrupted") ? `，中断 ${count("interrupted")}` : ""}`;
+  const unmounted = view.projects.filter((b) => !view.slots.some((v) => v.branch === b));
+  if (unmounted.length) lines.push(`工程未挂槽：${unmounted.join("、")}（打开时按需分配）`);
   if (skipped) lines.push(`${skipped} 个槽位超出统计时间，未读改动`);
   return {
     summary,

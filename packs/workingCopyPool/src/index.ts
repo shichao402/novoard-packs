@@ -93,7 +93,7 @@ async function runAcquire(params: Record<string, unknown>, ctx: ToolRunContext):
   const wc = view.slots.find((s) => s.id === outcome.slot)?.path ?? "";
   const lines = [summary, `入口：${entry}`, `实际目录：${wc}`];
   if (outcome.notes.length) lines.push(...outcome.notes);
-  if (recovered.length) lines.push(`中断恢复：${recovered.join("；")}`);
+  if (recovered.length) lines.push(`恢复与校正：${recovered.join("；")}`);
   return { detail: lines.join("\n"), code: 0, summary, pool: view };
 }
 
@@ -104,7 +104,7 @@ async function runGc(ctx: ToolRunContext): Promise<ToolRunResult> {
   const section = (title: string, items: string[]): void => {
     if (items.length) lines.push(`${title}：`, ...items.map((s) => `  ${s}`));
   };
-  section("中断恢复", report.recovered);
+  section("恢复与校正", report.recovered);
   section("解除阻塞", report.unblocked);
   section("仍阻塞", report.blocked);
   section("已回收", report.retired);
@@ -118,15 +118,15 @@ async function runGc(ctx: ToolRunContext): Promise<ToolRunResult> {
 
 async function runRefresh(ctx: ToolRunContext): Promise<ToolRunResult> {
   const pool = openPool(ctx);
-  if (pool.config.resident.length === 0) {
+  if (pool.config.projects.length === 0) {
     const recovered = await recover(pool);
-    return { detail: `pool.toml 没有常驻分支${recovered.length ? `；中断恢复：${recovered.join("；")}` : ""}`, code: 0, skipped: true };
+    return { detail: `pool.toml 的 projects 为空，没有要更新的工程${recovered.length ? `；恢复与校正：${recovered.join("；")}` : ""}`, code: 0, skipped: true };
   }
   const result = await refresh(pool);
   const failed = result.items.filter((i) => !i.ok);
   const lines = result.items.map((i) => `${i.ok ? (i.skipped ? "-" : "✓") : "✗"} ${i.branch}：${i.detail}`);
-  if (result.recovered.length) lines.push(`中断恢复：${result.recovered.join("；")}`);
-  const summary = `常驻 ${result.items.length} 个：成功 ${result.items.filter((i) => i.ok && !i.skipped).length}，跳过 ${result.items.filter((i) => i.skipped).length}，失败 ${failed.length}`;
+  if (result.recovered.length) lines.push(`恢复与校正：${result.recovered.join("；")}`);
+  const summary = `工程 ${result.items.length} 个：更新 ${result.items.filter((i) => i.ok && !i.skipped).length}，跳过 ${result.items.filter((i) => i.skipped).length}，失败 ${failed.length}`;
   return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
 }
 
@@ -161,15 +161,15 @@ function dryRun(displayName: string, toolId: string, params: Record<string, unkn
   const config = loadConfig(root);
   const lines = [head, `池根 ${root}，最多 ${config.maxSlots} 个槽位`];
   if (toolId === "acquire" || toolId === "refresh") {
-    lines.push(config.storage.roots.length ? `新槽位候选目录：${config.storage.roots.join("、")}（空间最多的合格目录优先）` : `新槽位目录：${path.join(root, "slots")}`);
-    lines.push(`新建准入：至少 ${config.storage.minFreeGiB} GiB 可用空间；现有槽位不搬迁`);
+    lines.push(`新槽位候选目录（空间最多的合格目录优先）：${config.storage.roots.map((r) => `${r.path}（至少 ${r.minFreeGiB} GiB）`).join("、")}`);
+    lines.push("现有槽位不搬迁；池定义目录里不放槽位");
   }
   if (toolId === "acquire") {
     lines.push(`分支 URL：${branchUrl(config, String(params.branch))}`);
     lines.push(`保留：${typeof params.ttl === "string" && params.ttl ? params.ttl : config.defaultTtl}${params.tag ? `，标签 ${params.tag}` : ""}`);
     lines.push(...sparsePlan(config));
   } else if (toolId === "refresh") {
-    lines.push(config.resident.length ? `常驻分支：${config.resident.join("、")}` : "没有常驻分支");
+    lines.push(config.projects.length ? `工程清单：${config.projects.join("、")}（只更新已挂槽的，未挂槽的跳过）` : "projects 为空，没有要更新的工程");
     lines.push(...sparsePlan(config));
   } else if (toolId === "gc") {
     lines.push(`超过 ${config.maxSlots} 个槽位时回收空闲槽位；删除 ${config.patchRetentionDays} 天前的存档`);

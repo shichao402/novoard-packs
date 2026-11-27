@@ -9,7 +9,7 @@ import { run } from "../packs/workingCopyPool/src/index";
 import { mutate, poolPaths, readState } from "../packs/workingCopyPool/src/state";
 import type { ToolRunContext } from "../shared/types";
 
-const baseConfig = 'maxSlots = 1\nsvnRoot = "file:///test"\n';
+const baseConfig = `maxSlots = 1\nsvnRoot = "file:///test"\n[storage]\nroots = [${JSON.stringify(path.join(os.tmpdir(), "wcp-hooks-store"))}]\n`;
 describe("项目钩子配置", () => {
   it("没有 hooks 保持旧配置结构", () => expect(parseConfig(baseConfig).hooks).toBeUndefined());
   it("argv 保留重复参数，默认不重试 blocked", () => {
@@ -36,6 +36,7 @@ function sh(command: string, args: string[]): string {
 describe.skipIf(!hasSvn)("更新前钩子（真实 SVN）", () => {
   let base: string;
   let root: string;
+  let store: string;
   let wc: string;
   let url: string;
   let hook: string;
@@ -43,8 +44,9 @@ describe.skipIf(!hasSvn)("更新前钩子（真实 SVN）", () => {
   const events = (): string => existsSync(path.join(root, "events.txt")) ? readFileSync(path.join(root, "events.txt"), "utf8") : "";
   const config = (withHook = true, retryBlocked = true): void => {
     writeFileSync(path.join(root, "pool.toml"), [
-      "maxSlots = 1", `svnRoot = ${JSON.stringify(url)}`, 'resident = ["b1"]',
+      "maxSlots = 1", `svnRoot = ${JSON.stringify(url)}`, 'projects = ["b1"]',
       ...(withHook ? ["[hooks]", `beforeUpdate = ${JSON.stringify([process.execPath, hook, root])}`, `retryBlocked = ${retryBlocked}`] : []),
+      "[storage]", `roots = [${JSON.stringify(store)}]`,
     ].join("\n"));
   };
   const refresh = (): Promise<unknown> => run("refresh", {}, ctx);
@@ -69,7 +71,9 @@ describe.skipIf(!hasSvn)("更新前钩子（真实 SVN）", () => {
     for (const rel of ["generated.bin", "source.cpp"]) writeFileSync(path.join(seed, "branches/b1", rel), "base\n");
     sh("svn", ["import", seed, url, "-m", "seed"]);
     root = path.join(base, "pool");
+    store = path.join(base, "store");
     mkdirSync(root);
+    mkdirSync(store);
     hook = path.join(base, "project hook.mjs");
     writeFileSync(hook, [
       'import { appendFileSync, readFileSync } from "node:fs";',
@@ -87,7 +91,7 @@ describe.skipIf(!hasSvn)("更新前钩子（真实 SVN）", () => {
     config(false);
     await run("acquire", { branch: "b1" }, ctx);
     await run("release", { branch: "b1" }, ctx);
-    wc = path.join(root, "slots/s01");
+    wc = path.join(store, "s01");
     config();
   }, 60_000);
 

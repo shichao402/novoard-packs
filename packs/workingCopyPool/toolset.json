@@ -8,7 +8,7 @@
     {
       "id": "candidates",
       "displayName": "候选分支",
-      "description": "开分支的候选项：池中已有、常驻、最近使用、listFrom 下最近有提交的分支",
+      "description": "开分支的候选项：池中已有、工程清单（projects）、最近使用、listFrom 下最近有提交的分支",
       "kind": "query",
       "idempotent": true,
       "supportsDryRun": true,
@@ -81,7 +81,7 @@
     {
       "id": "hold",
       "displayName": "保护工作副本",
-      "description": "外部应用正在使用该分支的工作副本时加保护：不随租约到期或进程退出失效，切换、缩容、常驻更新都会跳过；只能用同一 holdId 的 unhold 解除，多个持有者互不影响",
+      "description": "外部应用正在使用该分支的工作副本时加保护：不随租约到期或进程退出失效，切换、缩容、refresh 更新都会跳过；只能用同一 holdId 的 unhold 解除，多个持有者互不影响",
       "kind": "action",
       "idempotent": true,
       "supportsDryRun": true,
@@ -156,7 +156,7 @@
     {
       "id": "gc",
       "displayName": "池回收",
-      "description": "推进中断恢复、复查阻塞槽位、缩容删除多出的空闲槽位、清理断链与过期存档",
+      "description": "推进中断恢复、校正池外改动（被切走的分支、已删的目录）、复查阻塞槽位、缩容删除多出的空闲槽位、清理失效入口与过期存档",
       "kind": "action",
       "idempotent": true,
       "supportsDryRun": true,
@@ -164,8 +164,8 @@
     },
     {
       "id": "refresh",
-      "displayName": "更新常驻分支",
-      "description": "常驻分支在池里就更新到最新，不在池里就用空闲槽位准备好",
+      "displayName": "更新工程",
+      "description": "工程清单（projects）里已挂在槽位上的分支更新到最新；没挂槽的跳过，不为它们抢槽位",
       "kind": "action",
       "idempotent": true,
       "supportsDryRun": true,

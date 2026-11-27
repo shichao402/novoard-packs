@@ -1,17 +1,17 @@
 /**
  * workingCopyPool 单元测试（P6、P9）：配置校验（行号与字段）、锁接管、空闲推导、
- * 分支名转目录名、中断判定、candidates 合并去重与缓存、svn 输出解析。不需要 svn。
+ * 分支名转目录名、中断判定、candidates 合并去重与缓存、入口同步、svn 输出解析。不需要真实仓库。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { UsageError } from "../shared/cli";
 import type { ToolRunContext } from "../shared/types";
-import { branchFromUrl, branchUrl, ConfigError, isBranchName, leaseUntil, parseConfig, type PoolConfig } from "../packs/workingCopyPool/src/config";
+import { branchFromUrl, branchUrl, ConfigError, isBranchName, leaseUntil, loadConfig, parseConfig, type PoolConfig } from "../packs/workingCopyPool/src/config";
 import { run } from "../packs/workingCopyPool/src/index";
-import { claimSlot, slotState } from "../packs/workingCopyPool/src/pool";
+import { claimSlot, openPool, reconcile, slotState, syncLinks } from "../packs/workingCopyPool/src/pool";
 import { listCacheKey, listRemoteBranches, mergeCandidates, missHint, occupiedChoices, parseListXml, peekPool } from "../packs/workingCopyPool/src/queries";
 import {
   acquireLock,
@@ -33,9 +33,22 @@ import { captureSpec, describeSparse, formatSpecToml, FULL_SPARSE, SparsePlan, t
 
 const NOW = new Date("2026-11-16T08:00:00.000Z");
 const BASE = `maxSlots = 3\nsvnRoot = "https://svn.example.com/osg"\n`;
-const config = (extra = ""): PoolConfig => parseConfig(`${BASE}${extra}`);
+/** 纯函数测试用的存储根：不创建，只参与路径计算。 */
+const STORE = path.join(os.tmpdir(), "wcp-unit-store");
+const q = (p: string): string => JSON.stringify(p);
+const storageToml = (root: string): string => `\n[storage]\nroots = [${q(root)}]\n`;
+const config = (extra = ""): PoolConfig => parseConfig(`${BASE}${extra}${storageToml(STORE)}`);
+const alloc = (id: string): string => path.join(STORE, id);
 const deadPid = (): number => spawnSync(process.execPath, ["-e", ""]).pid!;
-const slot = (over: Partial<Slot>): Slot => ({ id: "s01", branch: "b1", url: "", phase: "ready", lease: null, ...over });
+const slot = (over: Partial<Slot>): Slot => ({ id: "s01", path: alloc(over.id ?? "s01"), branch: "b1", url: "", phase: "ready", lease: null, ...over });
+const linked = (p: string): boolean => {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -53,18 +66,18 @@ describe("pool.toml 校验", () => {
       maxSlots: 3,
       defaultTtl: "1d",
       svnRoot: "https://svn.example.com/osg",
-      resident: [],
+      projects: [],
       branches: { pattern: "branches/{name}", listFrom: [], recentDays: 30 },
       aliases: {},
       sparse: FULL_SPARSE,
       patchRetentionDays: 30,
-      storage: { roots: [], minFreeGiB: 0 },
+      storage: { roots: [{ path: STORE, minFreeGiB: 0 }], minFreeGiB: 0 },
     });
   });
 
-  it("规范化 exclude、去重 resident", () => {
-    const c = config(`resident = ["s2pub", "s2pub"]\n[sparse]\nexclude = ["./Assets\\\\Art/", "Assets/Art"]\n`);
-    expect(c.resident).toEqual(["s2pub"]);
+  it("规范化 exclude、去重 projects", () => {
+    const c = config(`projects = ["s2pub", "s2pub"]\n[sparse]\nexclude = ["./Assets\\\\Art/", "Assets/Art"]\n`);
+    expect(c.projects).toEqual(["s2pub"]);
     expect(c.sparse).toEqual({ root: "infinity", paths: { "Assets/Art": "exclude" } });
   });
 
@@ -88,9 +101,10 @@ describe("pool.toml 校验", () => {
     [`${BASE}[sparse.depth]\n"A/../B" = "empty"\n`, /路径不合法：A\/\.\.\/B/],
     [`${BASE}[sparse.depth]\n"A" = "empty"\n"A/" = "files"\n`, /冲突/],
     [`${BASE}[sparse.depth]\n"A" = "exclude"\n"A/B" = "infinity"\n`, /A\/B 在已排除的 A 之下/],
-    [`${BASE}resident = ["/abs"]\n`, /第 3 行 resident：分支名不合法/],
+    [`${BASE}projects = ["/abs"]\n`, /第 3 行 projects：分支名不合法/],
+    [`${BASE}resident = ["trunk"]\n`, /第 3 行 resident：已移除：池里不再有常驻分支/],
     [`svnRoot = "file:///r"\n`, /缺少 maxSlots/],
-    [`maxSlots = 2\nsvnRoot = "file:///r"\nresident = [\n`, /pool\.toml 第 \d+ 行/],
+    [`maxSlots = 2\nsvnRoot = "file:///r"\nprojects = [\n`, /pool\.toml 第 \d+ 行/],
   ])("报错带行号与字段 %#", (text, pattern) => {
     expect(() => parseConfig(text)).toThrow(pattern);
     try {
@@ -99,6 +113,38 @@ describe("pool.toml 校验", () => {
       expect(error).toBeInstanceOf(ConfigError);
       expect(error).toBeInstanceOf(UsageError);
     }
+  });
+
+  const DRIVE_ROOT = process.platform === "win32" ? "C:/" : "/";
+  it.each([
+    [BASE, /storage：缺少 \[storage\]\.roots/],
+    [`${BASE}[storage]\nroots = []\n`, /第 4 行 storage\.roots：应为非空数组/],
+    [`${BASE}[storage]\nroot = [${q(STORE)}]\n`, /第 4 行 storage\.root：未知字段/],
+    [`${BASE}[storage]\nroots = ["rel/slots"]\n`, /应为本机绝对目录：rel\/slots/],
+    [`${BASE}[storage]\nroots = [${q(DRIVE_ROOT)}]\n`, /不能使用盘根/],
+    [`${BASE}[storage]\nroots = [{ path = ${q(STORE)}, size = 1 }]\n`, /未知字段 size（每项只能写 path 与 minFreeGiB）/],
+    [`${BASE}[storage]\nroots = [{ path = ${q(STORE)}, minFreeGiB = -1 }]\n`, /minFreeGiB 应为不小于 0 的整数/],
+    [`${BASE}[storage]\nroots = [${q(STORE)}, { path = ${q(STORE)}, minFreeGiB = 5 }]\n`, /重复且下限不同（0 \/ 5）/],
+    [`${BASE}[storage]\nminFreeGiB = -1\nroots = [${q(STORE)}]\n`, /第 4 行 storage\.minFreeGiB：应为不小于 0 的整数/],
+  ])("[storage] 校验 %#", (text, pattern) => {
+    expect(() => parseConfig(text)).toThrow(pattern);
+  });
+
+  it("[storage]：每个目录可单独设下限，没写的用默认值；同一目录同下限只留一项", () => {
+    const a = path.join(STORE, "a");
+    const b = path.join(STORE, "b");
+    const c = parseConfig(`${BASE}[storage]\nminFreeGiB = 20\nroots = [${q(a)}, { path = ${q(b)}, minFreeGiB = 150 }, { path = ${q(a)} }]\n`);
+    expect(c.storage).toEqual({ minFreeGiB: 20, roots: [{ path: a, minFreeGiB: 20 }, { path: b, minFreeGiB: 150 }] });
+  });
+
+  it("loadConfig：存储目录不能在池定义目录里", () => {
+    const root = tmp();
+    writeFileSync(path.join(root, "pool.toml"), `${BASE}${storageToml(path.join(root, "slots"))}`);
+    expect(() => loadConfig(root)).toThrow(/在池定义目录 .* 里面；槽位应放在池定义目录之外/);
+    writeFileSync(path.join(root, "pool.toml"), `${BASE}${storageToml(root)}`);
+    expect(() => loadConfig(root)).toThrow(ConfigError);
+    writeFileSync(path.join(root, "pool.toml"), `${BASE}${storageToml(`${root}-slots`)}`);
+    expect(loadConfig(root).storage.roots).toEqual([{ path: `${root}-slots`, minFreeGiB: 0 }]);
   });
 
   it("分支 URL：aliases 优先，pattern 反推", () => {
@@ -172,16 +218,16 @@ describe("状态文件与锁", () => {
 });
 
 describe("空闲推导与选槽位", () => {
-  const c = config(`resident = ["s2pub"]\n`);
+  const c = config(`projects = ["s2pub"]\n`);
   const later = new Date(NOW.getTime() + 3600_000).toISOString();
   const earlier = new Date(NOW.getTime() - 3600_000).toISOString();
 
-  it("过期租约算空闲，常驻、blocked、有效租约不算", () => {
-    expect(isIdle(slot({ lease: { until: earlier } }), c, NOW)).toBe(true);
-    expect(isIdle(slot({ lease: { until: later } }), c, NOW)).toBe(false);
-    expect(isIdle(slot({ lease: { until: "forever" } }), c, NOW)).toBe(false);
-    expect(isIdle(slot({ branch: "s2pub" }), c, NOW)).toBe(false);
-    expect(isIdle(slot({ phase: "blocked" }), c, NOW)).toBe(false);
+  it("过期租约算空闲，blocked、有效租约不算；工程清单里的分支也可以被换出", () => {
+    expect(isIdle(slot({ lease: { until: earlier } }), NOW)).toBe(true);
+    expect(isIdle(slot({ lease: { until: later } }), NOW)).toBe(false);
+    expect(isIdle(slot({ lease: { until: "forever" } }), NOW)).toBe(false);
+    expect(isIdle(slot({ branch: "s2pub" }), NOW)).toBe(true);
+    expect(isIdle(slot({ phase: "blocked" }), NOW)).toBe(false);
   });
 
   it("中断判定：op 的进程不在了", () => {
@@ -189,7 +235,7 @@ describe("空闲推导与选槽位", () => {
     expect(isInterrupted(slot({ op: { kind: "switch", pid: process.pid, at: "" } }))).toBe(false);
     const dead = slot({ phase: "switching", op: { kind: "switch", pid: deadPid(), at: "" } });
     expect(isInterrupted(dead)).toBe(true);
-    expect(slotState(dead, c, NOW)).toBe("interrupted");
+    expect(slotState(dead, NOW)).toBe("interrupted");
   });
 
   it("续租取较晚者，forever 最大", () => {
@@ -197,7 +243,7 @@ describe("空闲推导与选槽位", () => {
     expect(laterLease({ until: "forever" }, { until: later })).toEqual({ until: "forever" });
   });
 
-  it("选槽位：命中续租 → 空闲中 lastUsed 最早 → 新建 → 池满", () => {
+  it("选槽位：命中续租 → 空闲中先换不在工程清单里的 → 新建（由 allocate 定目录）→ 再换工程 → 池满", () => {
     const state: PoolState = {
       version: 1,
       slots: [
@@ -207,43 +253,62 @@ describe("空闲推导与选槽位", () => {
       ],
     };
     const lease = { until: later };
-    expect(claimSlot(state, c, "a", lease, NOW)).toMatchObject({ kind: "hit", slot: { id: "s01", lease } });
-    const sw = claimSlot(state, c, "x", lease, NOW);
+    expect(claimSlot(state, c, "a", lease, NOW, alloc)).toMatchObject({ kind: "hit", slot: { id: "s01", lease } });
+    // s03 的 lastUsed 最早，但它在工程清单里，先换 s02
+    const sw = claimSlot(state, c, "x", lease, NOW, alloc);
     expect(sw).toMatchObject({ kind: "switch", slot: { id: "s02", phase: "switching", op: { kind: "switch", target: "x", from: "b" } } });
-    expect(claimSlot(state, c, "x", lease, NOW)).toMatchObject({ kind: "busy", slot: { id: "s02" } });
-    expect(claimSlot(state, c, "y", lease, NOW).kind).toBe("full");
+    expect(claimSlot(state, c, "x", lease, NOW, alloc)).toMatchObject({ kind: "busy", slot: { id: "s02" } });
+    expect(claimSlot(state, c, "y", lease, NOW, alloc)).toMatchObject({ kind: "switch", slot: { id: "s03", op: { from: "s2pub" } } });
+    expect(claimSlot(state, c, "z", lease, NOW, alloc).kind).toBe("full");
     const roomy = { ...c, maxSlots: 4 };
-    expect(claimSlot(state, roomy, "y", lease, NOW)).toMatchObject({ kind: "create", slot: { id: "s04" } });
+    expect(claimSlot(state, roomy, "z", lease, NOW, alloc)).toMatchObject({ kind: "create", slot: { id: "s04", path: alloc("s04"), branch: "" } });
+    expect(state.slots.find((s) => s.id === "s04")?.path).toBe(alloc("s04"));
+  });
+
+  it("选槽位：excluded 里的槽位跳过（换出时被阻塞的那个不再选）", () => {
+    const state: PoolState = { version: 1, slots: [slot({ id: "s01", branch: "a" }), slot({ id: "s02", branch: "b" })] };
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "x", null, NOW, alloc, new Set(["s01"]))).toMatchObject({ kind: "switch", slot: { id: "s02" } });
+  });
+
+  it("选槽位：有余量时新建，不换出空闲的工程槽位；满了才换", () => {
+    const state: PoolState = { version: 1, slots: [slot({ id: "s01", branch: "s2pub" })] };
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "x", null, NOW, alloc)).toMatchObject({ kind: "create", slot: { id: "s02", path: alloc("s02") } });
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "y", null, NOW, alloc)).toMatchObject({ kind: "switch", slot: { id: "s01", op: { from: "s2pub" } } });
   });
 });
 
 describe("持有保护（hold / unhold）", () => {
-  const c = config(`resident = ["s2pub"]\n`);
+  const c = config();
   const holds = { "osglauncher:p1": { at: NOW.toISOString(), label: "OSGLauncher 开工", path: "/x/s01" } };
   const ctxOf = (root: string): ToolRunContext => ({ cwd: root, workspacePath: root, timeoutMs: 5000, logFile: path.join(root, "l"), abortSignal: new AbortController().signal });
+  /** 池定义目录在 root，槽位放在池外的 `${root}-slots/<id>`；建 .svn 让校正把它当工作副本。 */
   const makePool = (slots: Slot[], extra = ""): string => {
     const root = tmp();
-    writeFileSync(path.join(root, "pool.toml"), `${BASE}${extra}`);
+    const store = `${root}-slots`;
+    dirs.push(store);
+    writeFileSync(path.join(root, "pool.toml"), `${BASE}${extra}${storageToml(store)}`);
     const paths = poolPaths(root);
     ensureLayout(paths);
-    for (const s of slots) mkdirSync(path.join(paths.slots, s.id), { recursive: true });
-    writeFileSync(paths.state, JSON.stringify({ version: 1, slots }));
+    const placed = slots.map((s) => ({ ...s, path: path.join(store, s.id) }));
+    for (const s of placed) mkdirSync(path.join(s.path, ".svn"), { recursive: true });
+    writeFileSync(paths.state, JSON.stringify({ version: 1, slots: placed }));
     return root;
   };
   const stateOf = (root: string): PoolState => JSON.parse(readFileSync(poolPaths(root).state, "utf8")) as PoolState;
-  const wcOf = (root: string, id = "s01"): string => path.join(root, "slots", id);
+  const wcOf = (root: string, id = "s01"): string => path.join(`${root}-slots`, id);
+  const linkOf = (root: string, branch: string): string => path.join(root, "branch", branchDirName(branch));
 
   it("受保护的槽位不算空闲，状态为 held，选槽位时跳过", () => {
-    expect(isIdle(slot({ holds }), c, NOW)).toBe(false);
-    expect(slotState(slot({ holds }), c, NOW)).toBe("held");
-    expect(slotState(slot({ holds, lease: { until: "forever" } }), c, NOW)).toBe("held");
-    expect(slotState(slot({ holds: {} }), c, NOW)).toBe("idle");
+    expect(isIdle(slot({ holds }), NOW)).toBe(false);
+    expect(slotState(slot({ holds }), NOW)).toBe("held");
+    expect(slotState(slot({ holds, lease: { until: "forever" } }), NOW)).toBe("held");
+    expect(slotState(slot({ holds: {} }), NOW)).toBe("idle");
     const state: PoolState = {
       version: 1,
       slots: [slot({ id: "s01", branch: "a", lastUsed: "2026-10-01T00:00:00Z", holds }), slot({ id: "s02", branch: "b", lastUsed: "2026-11-01T00:00:00Z" })],
     };
-    expect(claimSlot(state, { ...c, maxSlots: 2 }, "x", null, NOW)).toMatchObject({ kind: "switch", slot: { id: "s02" } });
-    expect(claimSlot(state, { ...c, maxSlots: 2 }, "y", null, NOW).kind).toBe("full");
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "x", null, NOW, alloc)).toMatchObject({ kind: "switch", slot: { id: "s02" } });
+    expect(claimSlot(state, { ...c, maxSlots: 2 }, "y", null, NOW, alloc).kind).toBe("full");
   });
 
   it("hold：确认实际目录后建立；同一 holdId 重复调用只刷新", async () => {
@@ -276,6 +341,13 @@ describe("持有保护（hold / unhold）", () => {
     expect(stateOf(root).slots.every((s) => !s.holds)).toBe(true);
   });
 
+  it("hold 先校正：槽位目录已不在就移除记录并拒绝，不按旧记录加保护", async () => {
+    const root = makePool([slot({ id: "s01", branch: "b1" })]);
+    rmSync(wcOf(root), { recursive: true, force: true });
+    await expect(run("hold", { branch: "b1", holdId: "h1", expectedPath: wcOf(root) }, ctxOf(root))).rejects.toThrow(/不在池里/);
+    expect(stateOf(root).slots).toEqual([]);
+  });
+
   it("unhold：必须确认已关闭；多个持有者互不清除；可重复调用", async () => {
     const root = makePool([slot({ id: "s01", branch: "b1" })]);
     const ctx = ctxOf(root);
@@ -293,6 +365,13 @@ describe("持有保护（hold / unhold）", () => {
     expect(last.detail).toContain("槽位已不受保护");
     expect(stateOf(root).slots[0].holds).toBeUndefined();
     expect((await run("unhold", { branch: "zz", holdId: "x", confirmClosed: true }, ctx)).skipped).toBe(true);
+  });
+
+  it("unhold：分支被池外切走后，按 holdId 仍能找到槽位解除", async () => {
+    const root = makePool([slot({ id: "s01", branch: "other", holds: { h1: { at: NOW.toISOString(), path: "/x" } } })]);
+    const out = await run("unhold", { branch: "b1", holdId: "h1", confirmClosed: true }, ctxOf(root));
+    expect(out.detail).toMatch(/已解除 b1（现为 other）（s01）的保护 h1/);
+    expect(stateOf(root).slots[0].holds).toBeUndefined();
   });
 
   it("租约与保护互相独立：release 不清保护，unhold 只有 releaseLease 才清租约", async () => {
@@ -315,11 +394,18 @@ describe("持有保护（hold / unhold）", () => {
     expect(stateOf(root).slots[1].holds).toBeUndefined();
   });
 
-  it("常驻更新跳过受保护槽位；缩容不回收受保护槽位", async () => {
-    const resident = makePool([slot({ id: "s01", branch: "b1", holds })], `resident = ["b1"]\n`);
-    const refreshed = await run("refresh", {}, ctxOf(resident));
+  it("refresh 只更新已挂槽的工程：受保护的跳过，未挂槽的不抢槽位；缩容不回收受保护槽位", async () => {
+    const projects = makePool([slot({ id: "s01", branch: "b1", holds })], `projects = ["b1", "b9"]\n`);
+    const refreshed = await run("refresh", {}, ctxOf(projects));
     expect(refreshed.code).toBe(0);
+    expect(refreshed.summary).toBe("工程 2 个：更新 0，跳过 2，失败 0");
     expect(refreshed.detail).toMatch(/- b1：跳过：s01 受保护（OSGLauncher 开工（osglauncher:p1））/);
+    expect(refreshed.detail).toContain("- b9：跳过：未挂槽（按需占用时分配）");
+    expect(stateOf(projects).slots.map((s) => s.id)).toEqual(["s01"]);
+
+    const none = await run("refresh", {}, ctxOf(makePool([])));
+    expect(none).toMatchObject({ code: 0, skipped: true });
+    expect(none.detail).toContain("projects 为空，没有要更新的工程");
 
     const ids = ["s01", "s02", "s03", "s04"];
     const crowded = makePool(ids.map((id, i) => slot({ id, branch: `b${i + 1}`, holds })));
@@ -350,10 +436,67 @@ describe("持有保护（hold / unhold）", () => {
     });
     expect(choices[0].hint).toBe("受保护（OSGLauncher 开工），已占用永久（bug-1）");
   });
+
+  describe("入口同步与校正（不需要 svn）", () => {
+    it("入口只在分支挂在槽位上且目录还在时存在；失效入口删除，不碰真实目录", () => {
+      const root = makePool([slot({ id: "s01", branch: "b1" }), slot({ id: "s02", branch: "b2" }), slot({ id: "s03", branch: "" })]);
+      rmSync(wcOf(root, "s02"), { recursive: true, force: true });
+      symlinkSync(wcOf(root, "s03"), linkOf(root, "gone"), "junction");
+      symlinkSync(wcOf(root, "s01"), linkOf(root, "b2"), "junction");
+      const notes = syncLinks(openPool(ctxOf(root)));
+      expect(notes).toEqual(expect.arrayContaining(["删除失效入口 branch/gone", "删除失效入口 branch/b2", "补建入口 branch/b1"]));
+      expect(realpathSync.native(linkOf(root, "b1"))).toBe(realpathSync.native(wcOf(root, "s01")));
+      expect(linked(linkOf(root, "b2"))).toBe(false);
+      expect(linked(linkOf(root, "gone"))).toBe(false);
+      expect(existsSync(path.join(wcOf(root, "s03"), ".svn"))).toBe(true);
+      expect(syncLinks(openPool(ctxOf(root)))).toEqual([]);
+    });
+
+    it("目录被删：没有保护就移除记录；有保护标为阻塞，入口一并失效", async () => {
+      const root = makePool([slot({ id: "s01", branch: "b1" }), slot({ id: "s02", branch: "b2", holds })]);
+      const pool = openPool(ctxOf(root));
+      syncLinks(pool);
+      expect(linked(linkOf(root, "b1")) && linked(linkOf(root, "b2"))).toBe(true);
+      for (const id of ["s01", "s02"]) rmSync(wcOf(root, id), { recursive: true, force: true });
+
+      const notes = await reconcile(pool);
+      expect(notes).toEqual(expect.arrayContaining([
+        "s01 b1：目录已不存在，已移除槽位记录",
+        "s02 b2：目录不存在，仍受保护，已标为阻塞",
+        "删除失效入口 branch/b1",
+        "删除失效入口 branch/b2",
+      ]));
+      expect(stateOf(root).slots).toEqual([expect.objectContaining({ id: "s02", phase: "blocked", blockedReason: expect.stringMatching(/工作副本目录不存在.*仍有持有保护/) })]);
+      expect(linked(linkOf(root, "b1")) || linked(linkOf(root, "b2"))).toBe(false);
+
+      // 解除保护后下次校正移除记录
+      await run("unhold", { branch: "b2", holdId: "osglauncher:p1", confirmClosed: true }, ctxOf(root));
+      expect(await reconcile(pool)).toContain("s02 b2：目录已不存在，已移除槽位记录");
+      expect(stateOf(root).slots).toEqual([]);
+    });
+
+    it("目录还在但不是工作副本：标为阻塞并保留内容；只看给定的槽位", async () => {
+      const root = makePool([slot({ id: "s01", branch: "b1" }), slot({ id: "s02", branch: "b2" })]);
+      for (const id of ["s01", "s02"]) rmSync(path.join(wcOf(root, id), ".svn"), { recursive: true, force: true });
+      writeFileSync(path.join(wcOf(root), "keep.txt"), "x");
+      const notes = await reconcile(openPool(ctxOf(root)), new Set(["s01"]));
+      expect(notes).toContain("s01 b1：目录不是工作副本，已标为阻塞");
+      expect(stateOf(root).slots.map((s) => s.phase)).toEqual(["blocked", "ready"]);
+      expect(existsSync(path.join(wcOf(root), "keep.txt"))).toBe(true);
+    });
+
+    it("存储目录整个不可访问：保留记录，不当作目录被删", async () => {
+      const root = makePool([slot({ id: "s01", branch: "b1" })]);
+      rmSync(`${root}-slots`, { recursive: true, force: true });
+      const notes = await reconcile(openPool(ctxOf(root)));
+      expect(notes.some((n) => /s01 b1：槽位存储目录不可访问/.test(n))).toBe(true);
+      expect(stateOf(root).slots.map((s) => s.id)).toEqual(["s01"]);
+    });
+  });
 });
 
 describe("candidates 与 occupied", () => {
-  const c = config(`resident = ["s2pub", "exp"]\n[branches]\nlistFrom = ["branches"]\nrecentDays = 10\n`);
+  const c = config(`projects = ["s2pub", "exp"]\n[branches]\nlistFrom = ["branches"]\nrecentDays = 10\n`);
   const view = (over: object) => ({
     id: "s01",
     branch: "b1",
@@ -370,10 +513,10 @@ describe("candidates 与 occupied", () => {
     ...over,
   });
 
-  it("按池中 → 常驻 → 最近 → listFrom 排序，按 value 去重，listFrom 只取 recentDays 内", () => {
+  it("按池中 → 工程清单 → 最近 → listFrom 排序，按 value 去重，listFrom 只取 recentDays 内", () => {
     const state: PoolState = { version: 1, slots: [slot({ id: "s01", branch: "b1" }), slot({ id: "s02", branch: "s2pub" })] };
     const choices = mergeCandidates({
-      views: [view({ behind: 2 }), view({ id: "s02", branch: "s2pub", state: "resident" })],
+      views: [view({ behind: 2 }), view({ id: "s02", branch: "s2pub" })],
       state,
       config: c,
       recent: ["r1", "b1", "gone"],
@@ -386,21 +529,25 @@ describe("candidates 与 occupied", () => {
     });
     expect(choices.map((x) => x.value)).toEqual(["b1", "s2pub", "exp", "r1", "gone", "new"]);
     expect(choices[0].hint).toBe("就绪，落后 2");
-    expect(choices[2].hint).toBe("常驻，需切换");
+    expect(choices[1].hint).toBe("就绪");
+    expect(choices[2].hint).toBe("工程清单，需切换");
     expect(choices.find((x) => x.value === "gone")?.hint).toContain("可能已删除");
   });
 
   it("远端不可达：只返回本地部分并在 hint 里说明", () => {
     const choices = mergeCandidates({ views: [], state: { version: 1, slots: [] }, config: c, recent: ["r1"], remote: [], remoteError: "远端列不出：E170013", now: NOW });
     expect(choices.map((x) => x.value)).toEqual(["s2pub", "exp", "r1"]);
+    expect(choices[0].hint).toBe("工程清单，需新建槽位");
     expect(choices[2].hint).toContain("远端不可达");
   });
 
-  it("missHint：有空闲 → 切换；没满 → 新建；否则池满", () => {
+  it("missHint：有非工程空闲 → 切换；没满 → 新建；只剩工程空闲 → 换出工程；否则池满", () => {
     const one = { ...c, maxSlots: 1 };
     expect(missHint({ version: 1, slots: [slot({})] }, one, NOW)).toBe("需切换");
     expect(missHint({ version: 1, slots: [slot({ lease: { until: "forever" } })] }, one, NOW)).toBe("池满，需先释放");
     expect(missHint({ version: 1, slots: [] }, one, NOW)).toBe("需新建槽位");
+    expect(missHint({ version: 1, slots: [slot({ branch: "s2pub" })] }, { ...c, maxSlots: 2 }, NOW)).toBe("需新建槽位");
+    expect(missHint({ version: 1, slots: [slot({ branch: "s2pub" })] }, one, NOW)).toBe("需切换（会换出工程槽位）");
   });
 
   it("occupied 只列有效租约，hint 带标签", () => {
@@ -413,7 +560,7 @@ describe("candidates 与 occupied", () => {
 
   it("listFrom 缓存：10 分钟内不访问远端；过期且远端失败时退回旧缓存", async () => {
     const root = tmp();
-    writeFileSync(path.join(root, "pool.toml"), `maxSlots = 2\nsvnRoot = "file:///nonexistent-wcp-repo"\n[branches]\nlistFrom = ["branches"]\n`);
+    writeFileSync(path.join(root, "pool.toml"), `maxSlots = 2\nsvnRoot = "file:///nonexistent-wcp-repo"\n[branches]\nlistFrom = ["branches"]\n${storageToml(STORE)}`);
     const ctx: ToolRunContext = { cwd: root, workspacePath: root, timeoutMs: 5000, logFile: path.join(root, "l"), abortSignal: new AbortController().signal };
     let now = NOW;
     const pool = peekPool(ctx, () => now);

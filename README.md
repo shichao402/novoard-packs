@@ -12,19 +12,23 @@ novoard-agent 的通用能力包。协议见 novoard-agent 仓 `docs/adr/0019-ca
 
 三个包放同一个仓库，是因为它们共用 svn 调用（`shared/svn-*`）和"哪个进程占着文件"的检测代码（`shared/occupants`）。这些代码在编译期分别打进各包，运行时互不依赖。
 
-workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`。Windows 上池根路径要尽量短（如 `D:/osgpool`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。稀疏检出用 `[sparse]` 的 `root` 加 `[sparse.depth]` 映射表，白名单、黑名单都能写；已有精简工程时先跑 `capture-sparse` 导出。
+workingCopyPool 的池根就是工具运行的 cwd，目录下放 `pool.toml`，池根只放配置、`branch/` 入口、存档和状态，不放槽位。槽位放在 `[storage].roots` 列出的专用目录里；Windows 上这些目录路径要尽量短（如 `E:/osgpool-slots`），因为槽位里还要再套工程目录，路径过长会触发 svn 与 Unity 的路径长度问题。`projects` 是工程清单，消费方据此生成工程卡片，refresh 只更新其中已挂槽的分支；池里没有常驻分支，trunk 这类日常工程不进池。稀疏检出用 `[sparse]` 的 `root` 加 `[sparse.depth]` 映射表，白名单、黑名单都能写；已有精简工程时先跑 `capture-sparse` 导出。
 
-## 多盘槽位
+## 槽位存放
 
-同一个池可以把新槽位分配到不同硬盘的专用目录，在 `pool.toml` 末尾增加：
+`[storage]` 必填，列出可以存放槽位的专用目录，可以跨盘：
 
 ```toml
+projects = ["release", "feature-x"]
+
 [storage]
-roots = ["D:/pool-slots", "F:/pool-slots"]
+roots = ["D:/pool-slots", { path = "F:/pool-slots", minFreeGiB = 300 }]
 minFreeGiB = 700
 ```
 
-先创建这些目录，再按需调整顶层 `maxSlots`。只影响新建：旧槽位不搬动，新槽位实际路径写入 state.json 的 `path`；后续切换、更新与回收沿用记录。新建选择剩余空间最多的合格位置，所有位置不合格则失败，不回退到未配置的盘。`minFreeGiB` 是检出前准入门槛，不是工程大小估算或完工后的剩余空间保证。不写这段继续使用原来的 `slots`。
+先创建这些目录（不能放在池根里），再按需调整顶层 `maxSlots`。每项可以是字符串，也可以用 `{ path, minFreeGiB }` 给这块盘单独设下限，没单独写的用 `[storage].minFreeGiB`。新槽位实际路径写入 state.json 的 `path`，后续切换、更新与回收沿用记录；改 roots 只影响新建，不搬动已有槽位。新建选择剩余空间最多的合格位置，所有位置不合格则失败，不回退到未配置的盘。`minFreeGiB` 是检出前准入门槛，不是工程大小估算或完工后的剩余空间保证。
+
+旧布局（池根下 `slots/`、`resident`）不再兼容，升级前按 [多盘说明](docs/multi-disk-pool.md) 的“从旧布局迁移”处理。
 
 详见 [多盘配置、安全边界与验证](docs/multi-disk-pool.md)。
 
@@ -67,10 +71,10 @@ Hub 来源清单配置三条，git 都指向本仓：
 | P5 | 已完成。进度：svn-update 输出阶段与文件计数，unity-warmup 输出导入百分比 | agent 控制台能看到步骤内部进度 |
 | P6 | 已完成。shared 类型加 `kind`、`choices`、`summary`、`pool`，CLI 写入 result json；svn 模块迁到 shared；workingCopyPool 骨架（pool.toml 校验、state.json 与锁） | 配置校验、锁接管单测 |
 | P7 | 已完成。acquire、release：命中、切换（改动 svn diff 存档后 revert）、稀疏新建、池满报错；入口链接 `branch/<分支>` | 集成测试：稀疏检出、切换、patch 恢复、池满、release 不动文件 |
-| P8 | 已完成。gc（过期回收、缩容）、refresh（更新常驻分支）、中断恢复 | 集成测试：缩容、refresh、中断与取消后接手 |
+| P8 | 已完成。gc（过期回收、缩容、复查阻塞）、refresh（更新工程清单里已挂槽的分支）、中断恢复、池外改动校正与入口同步 | 集成测试：缩容、refresh、中断与取消后接手、池外 switch |
 | P9 | 已完成。candidates、occupied、status 查询工具；listFrom 远端列表缓存 10 分钟，远端失败退回旧缓存 | 合并去重、缓存单测 |
 | P10 | 已完成。general/unity-open：detached 启动 Unity，工程锁被占时 skipped；win32 与 darwin | manifest 快照 |
-| P11 | 待 Windows 实机验收。真实 OSG 池上按 US1 到 US10 验证，跑通“开分支”、“s2pub 开工”、`wc-pool-nightly`；unity-open 取消任务不影响 Unity；内置会话完成占用并在 Cursor 打开 | 实机验收记录 |
+| P11 | 待 Windows 实机验收。真实 OSG 池上按 US1 到 US11 验证，跑通“开分支”、“s2pub 开工”、`wc-pool-nightly`；unity-open 取消任务不影响 Unity；内置会话完成占用并在 Cursor 打开 | 实机验收记录 |
 
 ## 迁移规则
 

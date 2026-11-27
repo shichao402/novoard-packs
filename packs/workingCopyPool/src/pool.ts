@@ -2,7 +2,7 @@
  * 池的核心流程（PRD working-copy-pool「执行工具」「切换流程」「新建流程」「中断恢复」）。
  * 约定：锁内只做 state.json 的读改写；svn、删除、释放占用都在锁外，用 phase 与 op 占位。
  */
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { UsageError } from "../../../shared/cli";
 import { prepareExclusiveAccess } from "../../../shared/occupants";
@@ -20,7 +20,7 @@ import {
   isHeld,
   isIdle,
   isInterrupted,
-  isResident,
+  isProject,
   laterLease,
   leaseActive,
   mutate,
@@ -38,7 +38,7 @@ import {
 } from "./state";
 import { applySparse, behindCount, Cancelled, isObstruction, sparseCheckout, svn, svnBusy, svnInfo, svnStatus, SvnError, type SvnCtx } from "./svn";
 import { describeSparse, isFullCheckout } from "./sparse";
-import { assertStorageParent, checkCreationSpace, selectSlotPath, StorageOwnershipError } from "./storage";
+import { assertStorageParent, checkCreationSpace, minFreeFor, selectSlotPath, StorageOwnershipError } from "./storage";
 import { runBeforeUpdate } from "./hooks";
 
 export type Pool = {
@@ -88,7 +88,7 @@ export type SlotView = {
   id: string;
   branch: string;
   /** 推导后的状态。 */
-  state: "occupied" | "held" | "resident" | "idle" | "switching" | "blocked" | "retiring" | "interrupted";
+  state: "occupied" | "held" | "idle" | "switching" | "blocked" | "retiring" | "interrupted";
   phase: Slot["phase"];
   lease: Lease | null;
   lastUsed: string | null;
@@ -101,14 +101,13 @@ export type SlotView = {
   holds: Array<{ id: string } & Hold>;
 };
 
-export function slotState(slot: Slot, config: PoolConfig, now: Date): SlotView["state"] {
+export function slotState(slot: Slot, now: Date): SlotView["state"] {
   if (slot.op && !pidAlive(slot.op.pid)) return "interrupted";
   if (slot.phase === "switching") return "switching";
   if (slot.phase === "retiring") return "retiring";
   if (slot.phase === "blocked") return "blocked";
   if (isHeld(slot)) return "held";
   if (leaseActive(slot.lease, now)) return "occupied";
-  if (isResident(slot, config)) return "resident";
   return "idle";
 }
 
@@ -129,7 +128,7 @@ export function viewSlots(pool: Pool, state: PoolState): SlotView[] {
   return state.slots.map((slot) => ({
     id: slot.id,
     branch: slot.branch,
-    state: slotState(slot, pool.config, now),
+    state: slotState(slot, now),
     phase: slot.phase,
     lease: leaseActive(slot.lease, now) ? slot.lease! : null,
     lastUsed: slot.lastUsed ?? null,
@@ -142,16 +141,16 @@ export function viewSlots(pool: Pool, state: PoolState): SlotView[] {
   }));
 }
 
-export function poolView(pool: Pool, state: PoolState): { root: string; maxSlots: number; resident: string[]; storage: PoolConfig["storage"]; slots: SlotView[] } {
-  return { root: pool.root, maxSlots: pool.config.maxSlots, resident: pool.config.resident,
-    storage: { ...pool.config.storage, roots: pool.config.storage.roots.length ? pool.config.storage.roots : [pool.paths.slots] },
-    slots: viewSlots(pool, state) };
+export type PoolView = { root: string; maxSlots: number; projects: string[]; storage: PoolConfig["storage"]; slots: SlotView[] };
+
+/** 结构化状态：projects 是工程清单（消费方据此生成工程卡片），slots 是槽位明细。 */
+export function poolView(pool: Pool, state: PoolState): PoolView {
+  return { root: pool.root, maxSlots: pool.config.maxSlots, projects: pool.config.projects, storage: pool.config.storage, slots: viewSlots(pool, state) };
 }
 
 const STATE_TEXT: Record<SlotView["state"], string> = {
   occupied: "占用",
   held: "保护中",
-  resident: "常驻",
   idle: "空闲",
   switching: "切换中",
   blocked: "阻塞",
@@ -222,6 +221,7 @@ function ourOp(slot: Slot): boolean {
  * 1. 工作副本被锁且没有 svn 进程占用：svn cleanup；有 svn 在跑就跳过，不 cleanup。
  * 2. URL 与目标一致且没有未完成的操作：补建链接设 ready；否则设 ready，branch 记为实际分支（不完整时记空），留给下次 acquire。
  * 3. 读不出 svn info（新建中断）：删除槽位目录。
+ * 最后校正池外改动（reconcile）：外部切换、目录被删，并同步 branch/ 入口。
  */
 export async function recover(pool: Pool): Promise<string[]> {
   const claimed = await mutate(pool.paths, (state) => {
@@ -252,14 +252,15 @@ export async function recover(pool: Pool): Promise<string[]> {
       notes.push(`${item.id} 中断恢复失败，已标为阻塞：${message}`);
     }
   }
+  notes.push(...await reconcile(pool));
   return notes;
 }
 
 async function recoverSlot(pool: Pool, id: string, op: SlotOp, branch: string): Promise<string> {
   const slot = findSlot(readState(pool.paths), id);
   const wc = slotDir(pool.paths, slot);
-  if (slot.path) assertStorageParent(wc);
-  if (slot.path && op.kind === "create" && !op.created && existsSync(wc)) {
+  assertStorageParent(wc);
+  if (op.kind === "create" && !op.created && existsSync(wc)) {
     throw new StorageOwnershipError(`新建目录所有权未确认：${wc}；保留目录与槽位记录，请人工检查`);
   }
   const sctx = svnCtx(pool);
@@ -319,6 +320,110 @@ async function recoverSlot(pool: Pool, id: string, op: SlotOp, branch: string): 
   return complete ? `${id} 中断前已完成 ${target}，已补建入口` : `${id} 中断时未完成${target ? ` ${target}` : ""}，当前 ${fresh.branch || "状态不明"}，下次占用时重新切换`;
 }
 
+// ---------------------------------------------------------------- 校正池外改动
+
+function missingDir(wc: string): boolean {
+  try {
+    lstatSync(wc);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/**
+ * 校正池外的改动，让记录和 branch/ 入口跟着真实工作副本走。只读 svn info，不切换、不删工作副本：
+ * - 目录已不存在（存储目录本身可访问）：没有持有保护就移除槽位记录，有保护标为阻塞；
+ * - 目录还在但不是工作副本：标为阻塞，内容留给人处理；
+ * - 被人在池外切到别的分支：按实际分支记录，租约与保护跟着目录走（还有人在用）；
+ *   实际分支已在别的槽位上时标为阻塞。
+ * 只看没有进行中操作、所有权已确认的就绪或阻塞槽位（阻塞的只查目录是否还在）；给了 ids 时只看这些槽位。最后同步入口。
+ */
+export async function reconcile(pool: Pool, ids?: ReadonlySet<string>): Promise<string[]> {
+  const notes: string[] = [];
+  const sctx = svnCtx(pool);
+  const list = readState(pool.paths).slots.filter((s) => (s.phase === "ready" || s.phase === "blocked") && !s.op && !s.ownershipUnconfirmed && (!ids || ids.has(s.id)));
+  for (const seen of list) {
+    const wc = slotDir(pool.paths, seen);
+    const name = `${seen.id} ${seen.branch || "(未定)"}`;
+    // 锁内复核：期间被别的进程改过就不动
+    const same = (slot: Slot | undefined): slot is Slot => Boolean(slot) && slot!.phase === seen.phase && !slot!.op && slot!.branch === seen.branch && slot!.url === seen.url;
+    try {
+      assertStorageParent(wc);
+    } catch (error) {
+      if (seen.phase === "ready") notes.push(`${name}：${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    if (missingDir(wc)) {
+      const result = await mutate(pool.paths, (state) => {
+        const slot = state.slots.find((s) => s.id === seen.id);
+        if (!same(slot)) return "";
+        if (isHeld(slot)) {
+          if (slot.phase === "blocked") return "";
+          slot.phase = "blocked";
+          slot.blockedReason = `工作副本目录不存在：${wc}；仍有持有保护（${holdNames(slot)}），解除后下次运行移除记录`;
+          return `${name}：目录不存在，仍受保护，已标为阻塞`;
+        }
+        state.slots = state.slots.filter((s) => s.id !== seen.id);
+        return `${name}：目录已不存在，已移除槽位记录`;
+      });
+      if (result) notes.push(result);
+      continue;
+    }
+    if (seen.phase !== "ready") continue;
+    if (!existsSync(path.join(wc, ".svn"))) {
+      const done = await mutate(pool.paths, (state) => {
+        const slot = state.slots.find((s) => s.id === seen.id);
+        if (!same(slot)) return false;
+        slot.phase = "blocked";
+        slot.blockedReason = `目录不是 svn 工作副本：${wc}；内容保留，请人工处理`;
+        return true;
+      });
+      if (done) notes.push(`${name}：目录不是工作副本，已标为阻塞`);
+      continue;
+    }
+    if (!seen.branch) continue;
+    let info: Awaited<ReturnType<typeof svnInfo>>;
+    try {
+      info = await svnInfo(sctx, wc);
+    } catch (error) {
+      if (error instanceof Cancelled) throw error;
+      info = undefined;
+    }
+    if (!info) {
+      notes.push(`${name}：读不出 svn info，暂不校正`);
+      continue;
+    }
+    if (sameUrl(info.url, seen.url) || sameUrl(info.url, branchUrl(pool.config, seen.branch))) continue;
+    const url = info.url;
+    const actual = branchFromUrl(pool.config, url) ?? "";
+    const oldLink = branchLink(pool.paths, seen.branch);
+    try {
+      if (linkExists(oldLink) && samePath(linkTarget(oldLink), wc)) removeLink(oldLink);
+    } catch (error) {
+      notes.push(`${seen.id}：删除旧入口 branch/${branchDirName(seen.branch)} 失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const result = await mutate(pool.paths, (state) => {
+      const slot = state.slots.find((s) => s.id === seen.id);
+      if (!same(slot)) return "";
+      const other = actual ? state.slots.find((s) => s.id !== seen.id && (s.branch === actual || s.op?.target === actual)) : undefined;
+      slot.url = url;
+      slot.behind = undefined;
+      if (other) {
+        slot.branch = "";
+        slot.phase = "blocked";
+        slot.blockedReason = `被池外切换到 ${actual}，但 ${actual} 已在 ${other.id} 上；请把其中一个切回原分支，或解除保护后交给池回收`;
+        return `${name}：被池外切换到 ${actual}，与 ${other.id} 重复，已标为阻塞`;
+      }
+      slot.branch = actual;
+      return `${name}：被池外切换到 ${actual || url}，已按实际${actual ? `分支 ${actual} ` : "情况（不符合分支规则，记为未定）"}记录`;
+    });
+    if (result) notes.push(result);
+  }
+  notes.push(...syncLinks(pool));
+  return notes;
+}
+
 // ---------------------------------------------------------------- acquire
 
 export type AcquireOutcome = {
@@ -336,8 +441,12 @@ type Claim =
   | { kind: "busy"; slot: Slot }
   | { kind: "full"; slots: Slot[] };
 
-/** 选槽位（锁内调用）：已在该分支 → 空闲中 lastUsed 最早 → 新建 → 池满。有效租约、持有保护、常驻的槽位都不算空闲。 */
-export function claimSlot(state: PoolState, config: PoolConfig, branch: string, lease: Lease | null, now: Date, excluded: Set<string> = new Set(), allocate?: (id: string) => string): Claim {
+/**
+ * 选槽位（锁内调用）：已在该分支 → 空闲且不在工程清单（projects）里的槽位 → 没满就新建 → 空闲的工程槽位 → 池满。
+ * 有效租约、持有保护的槽位都不算空闲；同类按 lastUsed 最早。工程清单里的分支在容量允许时保持挂槽。
+ * 新建时由 allocate 选定实际目录。
+ */
+export function claimSlot(state: PoolState, config: PoolConfig, branch: string, lease: Lease | null, now: Date, allocate: (id: string) => string, excluded: ReadonlySet<string> = new Set()): Claim {
   const existing = state.slots.find((s) => s.branch === branch && (s.phase === "ready" || s.phase === "blocked") && !s.op);
   if (existing) {
     if (lease) existing.lease = laterLease(leaseActive(existing.lease, now) ? existing.lease : null, lease);
@@ -348,21 +457,24 @@ export function claimSlot(state: PoolState, config: PoolConfig, branch: string, 
   if (moving) return { kind: "busy", slot: { ...moving } };
 
   const idle = state.slots
-    .filter((s) => isIdle(s, config, now) && !s.op && !excluded.has(s.id))
+    .filter((s) => isIdle(s, now) && !s.op && !excluded.has(s.id))
     .sort((a, b) => (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || a.id.localeCompare(b.id));
   const op = (kind: SlotOp["kind"], from?: string): SlotOp => ({ kind, target: branch, pid: process.pid, at: now.toISOString(), lease, from });
-  if (idle.length > 0) {
-    const slot = idle[0];
+  const switchTo = (slot: Slot): Claim => {
     slot.phase = "switching";
     slot.op = op("switch", slot.branch);
     return { kind: "switch", slot: { ...slot } };
-  }
+  };
+  const spare = idle.find((s) => !isProject(s, config));
+  if (spare) return switchTo(spare);
   if (state.slots.length < config.maxSlots) {
-    const slot: Slot = { id: nextSlotId(state), branch: "", url: "", phase: "switching", lease: null, op: op("create") };
-    if (allocate) slot.path = allocate(slot.id);
+    const id = nextSlotId(state);
+    const slot: Slot = { id, path: allocate(id), branch: "", url: "", phase: "switching", lease: null, op: op("create") };
     state.slots.push(slot);
     return { kind: "create", slot: { ...slot } };
   }
+  // 没有余量才换出工程清单里的空闲槽位
+  if (idle.length > 0) return switchTo(idle[0]);
   return { kind: "full", slots: state.slots.map((s) => ({ ...s })) };
 }
 
@@ -373,7 +485,7 @@ export function describeFull(pool: Pool, slots: Slot[]): string {
 }
 
 /**
- * 占用或准备一个分支。lease 为 null 表示只准备不加租约（refresh 准备常驻分支）。
+ * 占用或准备一个分支。lease 为 null 表示只准备不加租约。
  * 选中的空闲槽位被阻塞（改动无法存档）时换下一个。
  */
 export async function obtain(pool: Pool, branch: string, lease: Lease | null): Promise<AcquireOutcome> {
@@ -392,13 +504,13 @@ export async function obtain(pool: Pool, branch: string, lease: Lease | null): P
   const skipped = new Set<string>();
   for (;;) {
     const now = pool.now();
-    const claim = await mutate(pool.paths, (state) => claimSlot(state, pool.config, branch, lease, now, skipped,
-      (id) => selectSlotPath(pool.paths, state, id, pool.config.storage)));
+    const claim = await mutate(pool.paths, (state) => claimSlot(state, pool.config, branch, lease, now,
+      (id) => selectSlotPath(pool.paths, state, id, pool.config.storage), skipped));
     if (claim.kind === "full") throw new Error(describeFull(pool, claim.slots));
     if (claim.kind === "busy") throw new Error(`${branch} 正在 ${claim.slot.id} 上被另一个任务处理，稍后再试`);
     if (claim.kind === "hit") {
       const wc = slotDir(pool.paths, claim.slot);
-      if (claim.slot.path) assertStorageParent(wc);
+      assertStorageParent(wc);
       restoreLink(pool, claim.slot);
       if (claim.slot.phase === "blocked") notes.push(`注意：${claim.slot.id} 处于阻塞（${claim.slot.blockedReason ?? "原因未记录"}），请先处理`);
       const behind = await behindCount(sctx, wc).catch(() => undefined);
@@ -454,11 +566,9 @@ async function switchFlow(pool: Pool, claimed: Slot, branch: string, url: string
     const fresh = findSlot(readState(pool.paths), claimed.id);
     restoreLink(pool, fresh);
   };
-  if (claimed.path) {
-    try { assertStorageParent(wc); } catch (error) {
-      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+  try { assertStorageParent(wc); } catch (error) {
+    await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
 
   stage(pool, `${claimed.id}：${from || "(未定)"} → ${branch}`);
@@ -518,7 +628,7 @@ async function createFlow(pool: Pool, claimed: Slot, branch: string, url: string
   let created = false;
   stage(pool, `${claimed.id}：新建 ${branch}${isFullCheckout(spec) ? "" : `（${describeSparse(spec)[0]}）`}，实际目录 ${wc}`);
   try {
-    checkCreationSpace(wc, pool.config.storage.minFreeGiB);
+    checkCreationSpace(wc, minFreeFor(pool.config.storage, wc));
     mkdirSync(wc);
     created = true;
     await mutate(pool.paths, (state) => {
@@ -603,6 +713,9 @@ export type HoldOutcome = { slot: string; renewed: boolean; holders: number; det
  */
 export async function holdSlot(pool: Pool, branch: string, holdId: string, expectedPath: string, label?: string): Promise<HoldOutcome> {
   if (!path.isAbsolute(expectedPath)) throw new UsageError(`expectedPath 必须是绝对路径：${expectedPath}`);
+  // 先校正：槽位在池外被切走或目录没了时，不能按旧记录加保护
+  const ids = new Set(readState(pool.paths).slots.filter((s) => s.branch === branch).map((s) => s.id));
+  if (ids.size) await reconcile(pool, ids);
   const now = pool.now();
   return mutate(pool.paths, (state) => {
     const slot = state.slots.find((s) => s.branch === branch);
@@ -626,7 +739,7 @@ export async function holdSlot(pool: Pool, branch: string, holdId: string, expec
       slot: slot.id,
       renewed,
       holders,
-      detail: `${renewed ? "已刷新" : "已建立"} ${branch}（${slot.id}）的保护 ${holdId}；当前 ${holders} 个持有者，切换、缩容、常驻更新都会跳过这个槽位`,
+      detail: `${renewed ? "已刷新" : "已建立"} ${branch}（${slot.id}）的保护 ${holdId}；当前 ${holders} 个持有者，切换、缩容、refresh 更新都会跳过这个槽位`,
     };
   });
 }
@@ -637,13 +750,16 @@ export type UnholdOutcome = { slot?: string; removed: boolean; leaseReleased: bo
  * 解除 holdId 的保护，其他持有者不受影响。必须由调用方确认相关应用已关闭。
  * releaseLease 时顺带清除租约（等同 release）；其他持有者还在时槽位仍受保护。
  * 分支不在池里或该 holdId 不存在时什么都不改，视为已解除（可重复调用）。
+ * 先找该分支上带这个 holdId 的槽位，再找任意带它的槽位（分支被池外切走后仍能解除），最后按分支找。
  */
 export async function unholdSlot(pool: Pool, branch: string, holdId: string, confirmClosed: boolean, releaseLease: boolean): Promise<UnholdOutcome> {
   if (!confirmClosed) throw new UsageError("解除保护前须确认用到该工作副本的应用已关闭（--confirm-closed）");
   const now = pool.now();
   const result = await mutate(pool.paths, (state): UnholdOutcome => {
-    const slot = state.slots.find((s) => s.branch === branch);
+    const has = (s: Slot): boolean => Boolean(s.holds) && Object.prototype.hasOwnProperty.call(s.holds, holdId);
+    const slot = state.slots.find((s) => s.branch === branch && has(s)) ?? state.slots.find(has) ?? state.slots.find((s) => s.branch === branch);
     if (!slot) return { removed: false, leaseReleased: false, holders: 0, detail: `${branch} 不在池里，无需解除` };
+    const label = slot.branch === branch ? branch : `${branch}（现为 ${slot.branch || "未定"}）`;
     const holds = slot.holds ?? {};
     const removed = Object.prototype.hasOwnProperty.call(holds, holdId);
     if (removed) delete holds[holdId];
@@ -651,7 +767,7 @@ export async function unholdSlot(pool: Pool, branch: string, holdId: string, con
     const leaseReleased = releaseLease && leaseActive(slot.lease, now);
     if (releaseLease) slot.lease = null;
     const holders = Object.keys(holds).length;
-    const parts = [removed ? `已解除 ${branch}（${slot.id}）的保护 ${holdId}` : `${branch}（${slot.id}）上没有 ${holdId} 的保护`];
+    const parts = [removed ? `已解除 ${label}（${slot.id}）的保护 ${holdId}` : `${label}（${slot.id}）上没有 ${holdId} 的保护`];
     if (releaseLease) parts.push(leaseReleased ? "已释放租约" : "没有有效租约");
     parts.push(holders ? `仍有 ${holders} 个持有者（${holdNames(slot)}），继续受保护` : "槽位已不受保护");
     return { slot: slot.id, removed, leaseReleased, holders, detail: parts.join("；") };
@@ -676,7 +792,7 @@ export async function gc(pool: Pool): Promise<GcReport> {
         report.blocked.push(`${slot.id} ${slot.branch}：${slot.blockedReason ?? "目录所有权需要人工确认"}`);
         continue;
       }
-      if (slot.path) assertStorageParent(wc);
+      assertStorageParent(wc);
       const info = await svnInfo(sctx, wc);
       if (!info) {
         report.blocked.push(`${slot.id} ${slot.branch}：工作副本不可访问，保留阻塞与记录`);
@@ -687,17 +803,26 @@ export async function gc(pool: Pool): Promise<GcReport> {
         report.blocked.push(`${slot.id} ${slot.branch}：${st.problems.join("；") || "工作副本被锁"}`);
         continue;
       }
-      await mutate(pool.paths, (state) => {
+      // 实际分支已在别的槽位上（多半是池外切换造成）：保持阻塞，等人切回或交给池回收，不当成空闲槽位换出
+      const outcome = await mutate(pool.paths, (state) => {
         const s = state.slots.find((x) => x.id === slot.id);
-        if (!s || s.phase !== "blocked" || s.op) return;
+        if (!s || s.phase !== "blocked" || s.op) return undefined;
+        const actual = st.incomplete ? "" : branchFromUrl(pool.config, info.url) ?? "";
+        const other = actual ? state.slots.find((x) => x.id !== s.id && (x.branch === actual || x.op?.target === actual)) : undefined;
+        s.url = info.url;
+        if (other) {
+          s.branch = "";
+          s.blockedReason = `工作副本在 ${actual} 上，但 ${actual} 已在 ${other.id} 上；请把其中一个切回原分支，或解除保护后交给池回收`;
+          return { blocked: s.blockedReason };
+        }
         s.phase = "ready";
         s.blockedReason = undefined;
-        if (info) {
-          s.url = info.url;
-          s.branch = st.incomplete ? "" : branchFromUrl(pool.config, info.url) ?? "";
-        }
+        s.branch = actual;
+        return { branch: actual };
       });
-      report.unblocked.push(`${slot.id} ${slot.branch}`);
+      if (!outcome) continue;
+      if ("blocked" in outcome) report.blocked.push(`${slot.id} (未定)：${outcome.blocked}`);
+      else report.unblocked.push(`${slot.id} ${outcome.branch || "(未定)"}`);
     } catch (error) {
       if (error instanceof Cancelled) throw error;
       report.errors.push(`${slot.id} 复查失败：${error instanceof Error ? error.message : String(error)}`);
@@ -711,8 +836,8 @@ export async function gc(pool: Pool): Promise<GcReport> {
     const pick = await mutate(pool.paths, (state) => {
       if (state.slots.length <= pool.config.maxSlots) return undefined;
       const idle = state.slots
-        .filter((s) => isIdle(s, pool.config, now) && !s.op && !tried.has(s.id))
-        .sort((a, b) => (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || b.id.localeCompare(a.id));
+        .filter((s) => isIdle(s, now) && !s.op && !tried.has(s.id))
+        .sort((a, b) => Number(isProject(a, pool.config)) - Number(isProject(b, pool.config)) || (a.lastUsed ?? "").localeCompare(b.lastUsed ?? "") || b.id.localeCompare(a.id));
       if (idle.length === 0) return { none: state.slots.length - pool.config.maxSlots };
       const slot = idle[0];
       slot.phase = "retiring";
@@ -748,11 +873,9 @@ async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
     });
     restoreLink(pool, findSlot(readState(pool.paths), claimed.id));
   };
-  if (claimed.path) {
-    try { assertStorageParent(wc); } catch (error) {
-      await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+  try { assertStorageParent(wc); } catch (error) {
+    await back({ phase: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
   if (claimed.branch) {
     const link = branchLink(pool.paths, claimed.branch);
@@ -785,14 +908,19 @@ async function retireSlot(pool: Pool, claimed: Slot): Promise<string> {
   return `已删除 ${claimed.id}（${claimed.branch || "未定"}）${notes.length ? `：${notes.join("；")}` : ""}`;
 }
 
-/** 补建就绪槽位的入口，清理指向不存在槽位或与状态不符的链接；只删链接，不碰真实目录。 */
+/**
+ * 让 branch/ 入口与槽位一致：只有分支挂在槽位上（就绪或阻塞）且目录还在时入口才存在；
+ * 补建缺失的入口，删除指向不存在槽位、目录已不在或与状态不符的链接。只删链接，不碰真实目录。
+ */
 export function syncLinks(pool: Pool): string[] {
   const state = readState(pool.paths);
   const notes: string[] = [];
   const wanted = new Map<string, string>();
   for (const slot of state.slots) {
     if (!slot.branch || slot.op || (slot.phase !== "ready" && slot.phase !== "blocked")) continue;
-    wanted.set(branchDirName(slot.branch), slotDir(pool.paths, slot));
+    const dir = slotDir(pool.paths, slot);
+    if (!existsSync(dir)) continue;
+    wanted.set(branchDirName(slot.branch), dir);
   }
   const busyDirs = new Set(state.slots.filter((s) => s.op).map((s) => slotDir(pool.paths, s)));
   if (existsSync(pool.paths.branch)) {
@@ -857,10 +985,11 @@ export function prunePatches(pool: Pool): number {
 
 export type RefreshItem = { branch: string; ok: boolean; skipped?: boolean; detail: string };
 
+/** 更新工程清单里已挂在槽位上的分支；没挂槽的跳过（按需占用时再分配），不为它们抢槽位。 */
 export async function refresh(pool: Pool): Promise<{ recovered: string[]; items: RefreshItem[] }> {
   const recovered = await recover(pool);
   const items: RefreshItem[] = [];
-  for (const branch of pool.config.resident) {
+  for (const branch of pool.config.projects) {
     try {
       items.push(await refreshOne(pool, branch));
     } catch (error) {
@@ -888,23 +1017,13 @@ async function refreshOne(pool: Pool, branch: string): Promise<RefreshItem> {
   });
 
   if (claim.kind === "skip") return { branch, ok: true, skipped: true, detail: `跳过：${claim.why}` };
-  if (claim.kind === "absent") {
-    try {
-      const outcome = await obtain(pool, branch, null);
-      return { branch, ok: true, detail: `已准备（${outcome.slot}，${outcome.mode === "create" ? "新建" : "切换"}）${outcome.notes.length ? `：${outcome.notes.join("；")}` : ""}` };
-    } catch (error) {
-      if (error instanceof Cancelled) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("池满")) return { branch, ok: false, detail: "未就绪：池满" };
-      throw error;
-    }
-  }
+  if (claim.kind === "absent") return { branch, ok: true, skipped: true, detail: "跳过：未挂槽（按需占用时分配）" };
 
   const wc = slotDir(pool.paths, claim.slot);
   const sctx = svnCtx(pool);
   stage(pool, `更新 ${branch}（${claim.slot.id}）`);
   try {
-    if (claim.slot.path) assertStorageParent(wc);
+    assertStorageParent(wc);
     if (pool.config.hooks?.beforeUpdate) {
       if (await svnBusy(wc, pool.ctx.abortSignal)) throw new Error("有 SVN 进程正在处理槽位，未执行项目钩子");
       await releaseSlotOccupants(pool, wc);

@@ -14,7 +14,7 @@ retryBlocked = false
 
 ## 执行边界
 
-- 只用于 refresh 更新已存在的常驻分支；缺少常驻分支仍走原有 obtain/create/switch 流程，不在根目录外层批量处理槽位。
+- 只用于 refresh 更新工程清单（`projects`）里已挂槽的分支；未挂槽的直接跳过，不新建、不切换，也不在根目录外层批量处理槽位。
 - 在短暂 state 锁内标记槽位 `op.kind=update`；钩子和 SVN 更新在锁外执行，但 `op` 一直保留，其他池任务不得抢占。
 - 租约有效、正在处理、非 ready/blocked 状态或目录所有权未确认时跳过，不运行钩子。
 - 跨盘槽位沿用 state 中的实际 path，并检查存储父目录归属。
