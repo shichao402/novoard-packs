@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run as runVersionControl } from "../packs/versionControl/src/index";
 import { parseConfig } from "../packs/workingCopyPool/src/config";
 import { run } from "../packs/workingCopyPool/src/index";
+import { rulesFileFor, SVN_RULES_ENV } from "../packs/workingCopyPool/src/pool";
 import { mutate, poolPaths, readState } from "../packs/workingCopyPool/src/state";
 import { parseConflictInfo, peg } from "../shared/svn-resolve";
 import { categoryOf, discardSet, globToRegExp, parseSvnRules, ruleMatchesPath, sameExceptTopLevelKeys } from "../shared/svn-rules";
@@ -161,6 +162,17 @@ describe("池配置 [svnRules]", () => {
   it("解析 file 与 enable，enable 去重", () => {
     expect(parseConfig(`${baseConfig}[svnRules]\nfile = ${JSON.stringify(absRules)}\nenable = ["art", "art"]\n`).svnRules)
       .toEqual({ file: path.normalize(absRules), enable: ["art"] });
+  });
+  it("file 可省略：规则文件由调用方用环境变量传入", () => {
+    expect(parseConfig(`${baseConfig}[svnRules]\nenable = ["art"]\n`).svnRules).toEqual({ enable: ["art"] });
+  });
+  it("规则文件：环境变量优先，其次 file，都没有报错", () => {
+    const other = path.join(os.tmpdir(), "other-rules.toml");
+    expect(rulesFileFor({ file: absRules, enable: [] }, {})).toBe(absRules);
+    expect(rulesFileFor({ file: absRules, enable: [] }, { [SVN_RULES_ENV]: ` ${other} ` })).toBe(path.normalize(other));
+    expect(rulesFileFor({ enable: [] }, { [SVN_RULES_ENV]: other })).toBe(path.normalize(other));
+    expect(() => rulesFileFor({ enable: [] }, {})).toThrow(new RegExp(SVN_RULES_ENV));
+    expect(() => rulesFileFor({ enable: [] }, { [SVN_RULES_ENV]: "rules.toml" })).toThrow(/绝对路径/);
   });
   it.each([
     ['[hooks]\nbeforeUpdate = ["python"]', /已移除：改用 \[svnRules\]/],
@@ -464,6 +476,27 @@ describe.skipIf(!hasSvn)("按规则处理冲突（真实 SVN）", () => {
     expect(state().phase).toBe("blocked");
     expect(state().blockedReason).toContain("src/source.cpp");
     expect(state().op).toBeUndefined();
+  }, 120_000);
+
+  it("规则文件由环境变量传入：pool.toml 只写 enable；没传时报错且不动工作副本", async () => {
+    writeFileSync(path.join(root, "pool.toml"), [
+      "maxSlots = 1", `svnRoot = ${JSON.stringify(url)}`, 'projects = ["b1"]', "[svnRules]", "enable = []",
+      "[storage]", `roots = [${JSON.stringify(store)}]`,
+    ].join("\n"));
+    textConflict("gen/out.bin", "local\n", "remote\n");
+    const missing = await refresh();
+    expect(missing.code).not.toBe(0);
+    expect(missing.detail).toContain(SVN_RULES_ENV);
+    expect(status("gen/out.bin")).toContain('item="conflicted"');
+    expect(state().op).toBeUndefined();
+    process.env[SVN_RULES_ENV] = rulesFile;
+    try {
+      expect((await refresh()).code).toBe(0);
+    } finally {
+      delete process.env[SVN_RULES_ENV];
+    }
+    expect(read("gen/out.bin")).toBe("remote\n");
+    expect(dirty()).toEqual([]);
   }, 120_000);
 
   it("规则文件写错：refresh 报错，不动工作副本", async () => {

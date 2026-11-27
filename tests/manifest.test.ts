@@ -153,14 +153,14 @@ describe("workingCopyPool manifest（PRD working-copy-pool、ADR-0020）", () =>
     }
   });
 
-  it("参数：acquire branch 必填、ttl/tag 可选；release 只有 branch；hold/unhold 按保护契约；其余无参数", () => {
+  it("参数：acquire branch 必填、ttl/tag 可选；release 只有 branch；hold/unhold 按保护契约；status 可选 brief、refresh 可选 branch；其余无参数", () => {
     expect(byId.acquire.params?.map((p) => [p.name, p.required ?? false])).toEqual([
       ["branch", true],
       ["ttl", false],
       ["tag", false],
     ]);
     expect(byId.release.params?.map((p) => p.name)).toEqual(["branch"]);
-    // 消费方（OSGLauncher pool_entry / deps.rs）按这些参数名判断入口是否支持保护
+    // 消费方按这些参数名判断入口是否支持保护
     expect(byId.hold.params?.map((p) => [p.name, p.type, p.required ?? false])).toEqual([
       ["branch", "string", true],
       ["holdId", "string", true],
@@ -174,7 +174,9 @@ describe("workingCopyPool manifest（PRD working-copy-pool、ADR-0020）", () =>
       ["releaseLease", "boolean", false, false],
     ]);
     expect(byId["capture-sparse"].params?.map((p) => [p.name, p.required ?? false])).toEqual([["path", true]]);
-    for (const id of ["candidates", "occupied", "status", "gc", "refresh"]) expect(byId[id].params, id).toBeUndefined();
+    expect(byId.status.params?.map((p) => [p.name, p.type, p.required ?? false, p.default])).toEqual([["brief", "boolean", false, false]]);
+    expect(byId.refresh.params?.map((p) => [p.name, p.type, p.required ?? false])).toEqual([["branch", "string", false]]);
+    for (const id of ["candidates", "occupied", "gc"]) expect(byId[id].params, id).toBeUndefined();
   });
 });
 

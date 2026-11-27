@@ -64,13 +64,27 @@ function svnCtx(pool: Pool): SvnCtx {
 
 const loadedRules = new WeakMap<Pool, { rules: SvnRules; enable: string[] }>();
 
+/** 调用方传入规则文件的环境变量（绝对路径），优先于 pool.toml 的 [svnRules].file。 */
+export const SVN_RULES_ENV = "WORKING_COPY_POOL_SVN_RULES";
+
+/** 规则文件路径：环境变量优先，其次 [svnRules].file；都没有时报错（池开了规则却没有规则文件）。 */
+export function rulesFileFor(cfg: NonNullable<PoolConfig["svnRules"]>, env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env[SVN_RULES_ENV]?.trim();
+  if (fromEnv) {
+    if (!path.isAbsolute(fromEnv)) throw new UsageError(`${SVN_RULES_ENV} 应为本机绝对路径：${fromEnv}`);
+    return path.normalize(fromEnv);
+  }
+  if (cfg.file) return cfg.file;
+  throw new UsageError(`pool.toml 开了 [svnRules] 但没有规则文件：由调用方用环境变量 ${SVN_RULES_ENV} 传入，或写 [svnRules].file`);
+}
+
 /** 池配置了 [svnRules] 时读取并校验规则文件（每次运行读一次）；没配置返回 undefined。 */
 export function poolRules(pool: Pool): { rules: SvnRules; enable: string[] } | undefined {
   const cfg = pool.config.svnRules;
   if (!cfg) return undefined;
   let loaded = loadedRules.get(pool);
   if (!loaded) {
-    const rules = loadSvnRules(cfg.file);
+    const rules = loadSvnRules(rulesFileFor(cfg));
     discardSet(rules, cfg.enable);
     loaded = { rules, enable: cfg.enable };
     loadedRules.set(pool, loaded);
@@ -129,6 +143,8 @@ export function describeLease(lease: Lease | null | undefined, now: Date): strin
 export type SlotView = {
   id: string;
   branch: string;
+  /** 槽位记录的工作副本 URL；新建中或未定时为空串。 */
+  url: string;
   /** 推导后的状态。 */
   state: "occupied" | "held" | "idle" | "switching" | "blocked" | "retiring" | "interrupted";
   phase: Slot["phase"];
@@ -170,6 +186,7 @@ export function viewSlots(pool: Pool, state: PoolState): SlotView[] {
   return state.slots.map((slot) => ({
     id: slot.id,
     branch: slot.branch,
+    url: slot.url ?? "",
     state: slotState(slot, now),
     phase: slot.phase,
     lease: leaseActive(slot.lease, now) ? slot.lease! : null,
@@ -1117,11 +1134,14 @@ export function prunePatches(pool: Pool): number {
 
 export type RefreshItem = { branch: string; ok: boolean; skipped?: boolean; detail: string };
 
-/** 更新工程清单里已挂在槽位上的分支；没挂槽的跳过（按需占用时再分配），不为它们抢槽位。 */
-export async function refresh(pool: Pool): Promise<{ recovered: string[]; items: RefreshItem[] }> {
+/**
+ * 更新工程清单里已挂在槽位上的分支；没挂槽的跳过（按需占用时再分配），不为它们抢槽位。
+ * 给了 branch 时只更新这一个分支（可以不在工程清单里），跳过规则相同。
+ */
+export async function refresh(pool: Pool, only?: string): Promise<{ recovered: string[]; items: RefreshItem[] }> {
   const recovered = await recover(pool);
   const items: RefreshItem[] = [];
-  for (const branch of pool.config.projects) {
+  for (const branch of only ? [only] : pool.config.projects) {
     try {
       items.push(await refreshOne(pool, branch));
     } catch (error) {

@@ -1334,7 +1334,7 @@ function parseConfig(text) {
     fail("", "resident", "\u5DF2\u79FB\u9664\uFF1A\u6C60\u91CC\u4E0D\u518D\u6709\u5E38\u9A7B\u5206\u652F\uFF0C\u9700\u8981\u7684\u5206\u652F\uFF08\u5305\u62EC trunk\uFF09\u90FD\u5199\u8FDB projects");
   }
   if (raw.hooks !== void 0) {
-    fail("hooks", void 0, "\u5DF2\u79FB\u9664\uFF1A\u6539\u7528 [svnRules]\uFF08file = \u9879\u76EE svn-rules.toml \u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF0Cenable = \u5F00\u542F\u7684\u53EF\u9009\u4E22\u5F03\u7C7B\u522B\uFF09");
+    fail("hooks", void 0, "\u5DF2\u79FB\u9664\uFF1A\u6539\u7528 [svnRules]\uFF08enable = \u5F00\u542F\u7684\u53EF\u9009\u4E22\u5F03\u7C7B\u522B\uFF1B\u89C4\u5219\u6587\u4EF6\u7531\u8C03\u7528\u65B9\u7528\u73AF\u5883\u53D8\u91CF WORKING_COPY_POOL_SVN_RULES \u4F20\u5165\uFF0C\u6216\u5199 file = \u7EDD\u5BF9\u8DEF\u5F84\uFF09");
   }
   for (const key2 of Object.keys(raw)) {
     if (!TOP_KEYS.has(key2)) fail("", key2, "\u672A\u77E5\u5B57\u6BB5");
@@ -1395,13 +1395,16 @@ function parseConfig(text) {
   let svnRules;
   if (raw.svnRules !== void 0) {
     const r = table("svnRules", SVN_RULES_KEYS);
-    const file = str("svnRules", "file", r.file);
-    if (!path2.isAbsolute(file) || /[\u0000-\u001f]/.test(file)) fail("svnRules", "file", `\u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${file}`);
+    let file;
+    if (r.file !== void 0) {
+      file = str("svnRules", "file", r.file);
+      if (!path2.isAbsolute(file) || /[\u0000-\u001f]/.test(file)) fail("svnRules", "file", `\u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${file}`);
+    }
     const enable = strList("svnRules", "enable", r.enable);
     for (const name of enable) {
       if (!/^[A-Za-z][\w-]*$/.test(name)) fail("svnRules", "enable", `\u7C7B\u522B\u540D\u4E0D\u5408\u6CD5\uFF1A${name}`);
     }
-    svnRules = { file: path2.normalize(file), enable: [...new Set(enable)] };
+    svnRules = { ...file ? { file: path2.normalize(file) } : {}, enable: [...new Set(enable)] };
   }
   const s = table("sparse", SPARSE_KEYS);
   const sparse = parseSparse(s, fail, strList);
@@ -1596,7 +1599,10 @@ var status = {
   kind: "query",
   idempotent: true,
   supportsDryRun: true,
-  supportsResultJson: true
+  supportsResultJson: true,
+  params: [
+    { name: "brief", type: "boolean", default: false, label: "\u5FEB\u901F\u6A21\u5F0F", description: "\u4E0D\u7EDF\u8BA1\u672C\u5730\u6539\u52A8\uFF08\u4E0D\u8DD1 svn status\uFF09\uFF0C\u53EA\u8BFB\u6C60\u72B6\u6001\uFF0C\u9002\u5408\u8F6E\u8BE2" }
+  ]
 };
 var acquire = {
   id: "acquire",
@@ -1632,9 +1638,9 @@ var hold = {
   supportsResultJson: true,
   params: [
     { name: "branch", type: "string", required: true, label: "\u5206\u652F" },
-    { name: "holdId", type: "string", required: true, label: "\u6301\u6709\u8005 ID", description: "\u8C03\u7528\u65B9\u81EA\u5B9A\u7684\u7A33\u5B9A\u6807\u8BC6\uFF0C\u5982 osglauncher:<\u9879\u76EE>\uFF1B\u540C\u4E00 ID \u91CD\u590D\u4FDD\u62A4\u53EA\u5237\u65B0\u65F6\u95F4" },
+    { name: "holdId", type: "string", required: true, label: "\u6301\u6709\u8005 ID", description: "\u8C03\u7528\u65B9\u81EA\u5B9A\u7684\u7A33\u5B9A\u6807\u8BC6\uFF0C\u5982 <\u5E94\u7528>:<\u4F1A\u8BDD>\uFF1B\u540C\u4E00 ID \u91CD\u590D\u4FDD\u62A4\u53EA\u5237\u65B0\u65F6\u95F4" },
     { name: "expectedPath", type: "string", required: true, label: "\u786E\u8BA4\u7684\u76EE\u5F55", description: "\u8C03\u7528\u65B9\u770B\u5230\u7684\u5DE5\u4F5C\u526F\u672C\u5B9E\u9645\u76EE\u5F55\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF1B\u4E0E\u6C60\u91CC\u4E0D\u4E00\u81F4\u65F6\u62D2\u7EDD\uFF0C\u907F\u514D\u4FDD\u62A4\u9519\u69FD\u4F4D" },
-    { name: "label", type: "string", label: "\u8BF4\u660E", description: "\u7ED9\u4EBA\u770B\u7684\u6301\u6709\u8005\u8BF4\u660E\uFF0C\u5982 OSGLauncher \u5F00\u5DE5" }
+    { name: "label", type: "string", label: "\u8BF4\u660E", description: "\u7ED9\u4EBA\u770B\u7684\u6301\u6709\u8005\u8BF4\u660E\uFF0C\u5982 \u67D0\u67D0\u542F\u52A8\u5668\u5F00\u5DE5" }
   ]
 };
 var unhold = {
@@ -1664,11 +1670,12 @@ var gc = {
 var refresh = {
   id: "refresh",
   displayName: "\u66F4\u65B0\u5DE5\u7A0B",
-  description: "\u5DE5\u7A0B\u6E05\u5355\uFF08projects\uFF09\u91CC\u5DF2\u6302\u5728\u69FD\u4F4D\u4E0A\u7684\u5206\u652F\u66F4\u65B0\u5230\u6700\u65B0\uFF1B\u6CA1\u6302\u69FD\u7684\u8DF3\u8FC7\uFF0C\u4E0D\u4E3A\u5B83\u4EEC\u62A2\u69FD\u4F4D",
+  description: "\u5DE5\u7A0B\u6E05\u5355\uFF08projects\uFF09\u91CC\u5DF2\u6302\u5728\u69FD\u4F4D\u4E0A\u7684\u5206\u652F\u66F4\u65B0\u5230\u6700\u65B0\uFF1B\u6CA1\u6302\u69FD\u7684\u8DF3\u8FC7\uFF0C\u4E0D\u4E3A\u5B83\u4EEC\u62A2\u69FD\u4F4D\u3002\u7ED9\u4E86\u5206\u652F\u65F6\u53EA\u66F4\u65B0\u8FD9\u4E00\u4E2A",
   kind: "action",
   idempotent: true,
   supportsDryRun: true,
-  supportsResultJson: true
+  supportsResultJson: true,
+  params: [{ name: "branch", type: "string", label: "\u5206\u652F", description: "\u53EA\u66F4\u65B0\u8FD9\u4E2A\u5206\u652F\uFF08\u53EF\u4E0D\u5728\u5DE5\u7A0B\u6E05\u5355\u91CC\uFF09\uFF1B\u7F3A\u7701\u66F4\u65B0\u6574\u4E2A\u5DE5\u7A0B\u6E05\u5355" }]
 };
 var captureSparse = {
   id: "capture-sparse",
@@ -4270,12 +4277,22 @@ function svnCtx(pool) {
   return { ...pool.ctx, cwd: pool.root };
 }
 var loadedRules = /* @__PURE__ */ new WeakMap();
+var SVN_RULES_ENV = "WORKING_COPY_POOL_SVN_RULES";
+function rulesFileFor(cfg, env = process.env) {
+  const fromEnv = env[SVN_RULES_ENV]?.trim();
+  if (fromEnv) {
+    if (!path14.isAbsolute(fromEnv)) throw new UsageError(`${SVN_RULES_ENV} \u5E94\u4E3A\u672C\u673A\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${fromEnv}`);
+    return path14.normalize(fromEnv);
+  }
+  if (cfg.file) return cfg.file;
+  throw new UsageError(`pool.toml \u5F00\u4E86 [svnRules] \u4F46\u6CA1\u6709\u89C4\u5219\u6587\u4EF6\uFF1A\u7531\u8C03\u7528\u65B9\u7528\u73AF\u5883\u53D8\u91CF ${SVN_RULES_ENV} \u4F20\u5165\uFF0C\u6216\u5199 [svnRules].file`);
+}
 function poolRules(pool) {
   const cfg = pool.config.svnRules;
   if (!cfg) return void 0;
   let loaded = loadedRules.get(pool);
   if (!loaded) {
-    const rules = loadSvnRules(cfg.file);
+    const rules = loadSvnRules(rulesFileFor(cfg));
     discardSet(rules, cfg.enable);
     loaded = { rules, enable: cfg.enable };
     loadedRules.set(pool, loaded);
@@ -4341,6 +4358,7 @@ function viewSlots(pool, state) {
   return state.slots.map((slot) => ({
     id: slot.id,
     branch: slot.branch,
+    url: slot.url ?? "",
     state: slotState(slot, now),
     phase: slot.phase,
     lease: leaseActive(slot.lease, now) ? slot.lease : null,
@@ -5155,10 +5173,10 @@ function prunePatches(pool) {
   }
   return removed;
 }
-async function refresh2(pool) {
+async function refresh2(pool, only) {
   const recovered = await recover(pool);
   const items = [];
-  for (const branch of pool.config.projects) {
+  for (const branch of only ? [only] : pool.config.projects) {
     try {
       items.push(await refreshOne(pool, branch));
     } catch (error) {
@@ -5410,14 +5428,14 @@ function occupied2(pool) {
   const choices = occupiedChoices(readState(pool.paths), pool.now());
   return { choices, detail: choices.length ? `${choices.length} \u4E2A\u5206\u652F\u88AB\u5360\u7528` : "\u6CA1\u6709\u88AB\u5360\u7528\u7684\u5206\u652F" };
 }
-async function status2(pool) {
+async function status2(pool, options = {}) {
   const now = pool.now();
   const state = readState(pool.paths);
   const view = poolView(pool, state);
   const deadline = Date.now() + STATUS_BUDGET_MS;
   const changes = /* @__PURE__ */ new Map();
   let skipped = 0;
-  for (const slot of view.slots) {
+  for (const slot of options.brief ? [] : view.slots) {
     const left = deadline - Date.now();
     if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync10(path15.join(slot.path, ".svn"))) {
       if (left < 500) skipped += 1;
@@ -5475,7 +5493,7 @@ async function run(toolId, rawParams, ctx) {
       return { detail: result.detail, code: 0, choices: result.choices };
     }
     case "status": {
-      const result = await status2(peekPool(ctx));
+      const result = await status2(peekPool(ctx), { brief: params.brief === true });
       return { detail: result.detail, code: 0, summary: result.summary, pool: result.pool };
     }
     case "acquire":
@@ -5505,7 +5523,7 @@ async function run(toolId, rawParams, ctx) {
     case "gc":
       return runGc(ctx);
     case "refresh":
-      return runRefresh(ctx);
+      return runRefresh(params, ctx);
     case "capture-sparse":
       return runCaptureSparse(params, ctx);
     default:
@@ -5545,18 +5563,27 @@ async function runGc(ctx) {
   const summary = `\u56DE\u6536 ${report.retired.length}\uFF0C\u963B\u585E ${report.blocked.length}\uFF0C\u5F85\u7F29\u5BB9 ${report.pendingShrink.length ? "\u6709" : "\u65E0"}${report.errors.length ? `\uFF0C\u5931\u8D25 ${report.errors.length}` : ""}`;
   return { detail: [summary, ...lines].join("\n"), code: report.errors.length ? 1 : 0, summary };
 }
-async function runRefresh(ctx) {
+async function runRefresh(params, ctx) {
   const pool = openPool(ctx);
-  if (pool.config.projects.length === 0) {
+  const only = typeof params.branch === "string" && params.branch.trim() ? params.branch.trim() : void 0;
+  if (!only && pool.config.projects.length === 0) {
     const recovered = await recover(pool);
     return { detail: `pool.toml \u7684 projects \u4E3A\u7A7A\uFF0C\u6CA1\u6709\u8981\u66F4\u65B0\u7684\u5DE5\u7A0B${recovered.length ? `\uFF1B\u6062\u590D\u4E0E\u6821\u6B63\uFF1A${recovered.join("\uFF1B")}` : ""}`, code: 0, skipped: true };
   }
-  const result = await refresh2(pool);
+  const result = await refresh2(pool, only);
   const failed = result.items.filter((i) => !i.ok);
   const lines = result.items.map((i) => `${i.ok ? i.skipped ? "-" : "\u2713" : "\u2717"} ${i.branch}\uFF1A${i.detail}`);
   if (result.recovered.length) lines.push(`\u6062\u590D\u4E0E\u6821\u6B63\uFF1A${result.recovered.join("\uFF1B")}`);
-  const summary = `\u5DE5\u7A0B ${result.items.length} \u4E2A\uFF1A\u66F4\u65B0 ${result.items.filter((i) => i.ok && !i.skipped).length}\uFF0C\u8DF3\u8FC7 ${result.items.filter((i) => i.skipped).length}\uFF0C\u5931\u8D25 ${failed.length}`;
-  return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
+  const updated = result.items.filter((i) => i.ok && !i.skipped).length;
+  const skipped = result.items.filter((i) => i.skipped).length;
+  const summary = only ? `${only}\uFF1A${failed.length ? "\u66F4\u65B0\u5931\u8D25" : updated ? "\u5DF2\u66F4\u65B0" : "\u8DF3\u8FC7"}` : `\u5DE5\u7A0B ${result.items.length} \u4E2A\uFF1A\u66F4\u65B0 ${updated}\uFF0C\u8DF3\u8FC7 ${skipped}\uFF0C\u5931\u8D25 ${failed.length}`;
+  return {
+    detail: [summary, ...lines].join("\n"),
+    code: failed.length ? 1 : 0,
+    summary,
+    ...only && skipped ? { skipped: true } : {},
+    pool: poolView(pool, readState(pool.paths))
+  };
 }
 async function runCaptureSparse(params, ctx) {
   const wc = path16.resolve(ctx.cwd, String(params.path));
@@ -5587,7 +5614,8 @@ function dryRun(displayName, toolId, params, ctx) {
     lines.push(`\u4FDD\u7559\uFF1A${typeof params.ttl === "string" && params.ttl ? params.ttl : config.defaultTtl}${params.tag ? `\uFF0C\u6807\u7B7E ${params.tag}` : ""}`);
     lines.push(...sparsePlan(config));
   } else if (toolId === "refresh") {
-    lines.push(config.projects.length ? `\u5DE5\u7A0B\u6E05\u5355\uFF1A${config.projects.join("\u3001")}\uFF08\u53EA\u66F4\u65B0\u5DF2\u6302\u69FD\u7684\uFF0C\u672A\u6302\u69FD\u7684\u8DF3\u8FC7\uFF09` : "projects \u4E3A\u7A7A\uFF0C\u6CA1\u6709\u8981\u66F4\u65B0\u7684\u5DE5\u7A0B");
+    if (typeof params.branch === "string" && params.branch) lines.push(`\u53EA\u66F4\u65B0 ${params.branch}\uFF08\u5DF2\u6302\u69FD\u624D\u66F4\u65B0\uFF0C\u672A\u6302\u69FD\u8DF3\u8FC7\uFF09`);
+    else lines.push(config.projects.length ? `\u5DE5\u7A0B\u6E05\u5355\uFF1A${config.projects.join("\u3001")}\uFF08\u53EA\u66F4\u65B0\u5DF2\u6302\u69FD\u7684\uFF0C\u672A\u6302\u69FD\u7684\u8DF3\u8FC7\uFF09` : "projects \u4E3A\u7A7A\uFF0C\u6CA1\u6709\u8981\u66F4\u65B0\u7684\u5DE5\u7A0B");
     lines.push(...sparsePlan(config));
   } else if (toolId === "gc") {
     lines.push(`\u8D85\u8FC7 ${config.maxSlots} \u4E2A\u69FD\u4F4D\u65F6\u56DE\u6536\u7A7A\u95F2\u69FD\u4F4D\uFF1B\u5220\u9664 ${config.patchRetentionDays} \u5929\u524D\u7684\u5B58\u6863`);

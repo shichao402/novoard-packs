@@ -229,14 +229,15 @@ export function occupied(pool: Pool): { choices: Choice[]; detail: string } {
 
 export type SlotChanges = { versioned: number; unversioned: number; problems: string[] } | null;
 
-export async function status(pool: Pool): Promise<{ detail: string; summary: string; pool: unknown }> {
+/** brief：不跑 svn status，只读状态文件（毫秒级，供调用方轮询）；changes 一律为 null。 */
+export async function status(pool: Pool, options: { brief?: boolean } = {}): Promise<{ detail: string; summary: string; pool: unknown }> {
   const now = pool.now();
   const state = readState(pool.paths);
   const view = poolView(pool, state);
   const deadline = Date.now() + STATUS_BUDGET_MS;
   const changes = new Map<string, SlotChanges>();
   let skipped = 0;
-  for (const slot of view.slots) {
+  for (const slot of options.brief ? [] : view.slots) {
     const left = deadline - Date.now();
     // 切换中、删除中的槽位正被别人改，不读；预算用完的标 null
     if (left < 500 || slot.state === "switching" || slot.state === "retiring" || !existsSync(path.join(slot.path, ".svn"))) {

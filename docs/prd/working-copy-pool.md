@@ -6,6 +6,7 @@
 - 依赖：novoard-agent 仓 ADR-0019（能力包协议）、ADR-0020（磁贴运行时输入与查询工具）
 - 修订（2026-11-27）：常驻分支断代删除，改为工程清单 `projects`；槽位只放在 `[storage].roots` 里，池定义目录下不再有 `slots/`；新增池外改动校正
 - 修订（2026-11-27）：新增 `[svnRules]`，冲突按项目规则文件自动处理，`[hooks]` 移除，见 [SVN 冲突规则](../svn-rules.md)
+- 修订（2026-11-27）：规则文件可由调用方用环境变量 `WORKING_COPY_POOL_SVN_RULES` 传入，`[svnRules].file` 改为可选；`status` 新增 `brief`，槽位视图新增 `url`；`refresh` 新增可选 `branch`
 
 ## 背景
 
@@ -186,8 +187,8 @@ root = "empty"
 
 # 可选：项目 SVN 冲突规则，见 docs/svn-rules.md
 [svnRules]
-file = "C:/path/to/osg/svn-rules.toml"
 enable = ["art"]
+# file = "C:/path/to/project/svn-rules.toml"   # 可选，调用方用环境变量传入时省略
 ```
 
 - 配置由用户手写，工具只读不写。
@@ -195,7 +196,7 @@ enable = ["art"]
 - 解析用打进 `dist/pack.mjs` 的 TOML 库，不引入运行时依赖。
 - 校验失败时所有工具以退出码 64 失败，result json 写明哪一行哪个字段。
 - `resident` 已断代删除，写了按配置错误报出，提示把需要的分支（包括 trunk）都写进 `projects`。
-- `[svnRules]` 可选：`file` 为项目规则文件的本机绝对路径，`enable` 为开启的可选丢弃类别。规则文件在每次处理时读取，写错时本次操作失败、不动工作副本。旧的 `[hooks]` 已移除，写了按配置错误报出。
+- `[svnRules]` 可选：`enable` 为开启的可选丢弃类别；规则文件优先取环境变量 `WORKING_COPY_POOL_SVN_RULES`（绝对路径，由调用方传入），没有再用 `file`（本机绝对路径），两处都没有时需要按规则处理的操作失败。规则文件在每次处理时读取，写错时本次操作失败、不动工作副本。旧的 `[hooks]` 已移除，写了按配置错误报出。
 
 ### 多盘存储（2026-11-23，2026-11-27 改为必填）
 
@@ -273,7 +274,7 @@ enable = ["art"]
 | --- | --- | --- |
 | `candidates` | “开分支”的候选项 | 依次为：池中已有的分支（hint：就绪 / 已占用到某时 / 受保护及持有者 / 落后 N）、工程清单里还没挂槽的（hint：工程清单加需要怎么分配）、`history.jsonl` 最近使用的、`listFrom` 下最近有提交的（hint：需切换、需新建槽位、需切换（会换出工程槽位）或池满）。按 value 去重 |
 | `occupied` | “释放分支”的候选项 | 当前有有效租约的分支，hint 为到期时间和标签 |
-| `status` | 全池状态 | `choices` 为空，`detail` 为人读摘要（含每个槽位的实际目录和未挂槽的工程）；另在 result json 的 `pool` 字段给出结构化状态（`projects` 工程清单、`storage`、`slots`），供内置会话和 OSGLauncher 使用 |
+| `status` | 全池状态 | `choices` 为空，`detail` 为人读摘要（含每个槽位的实际目录和未挂槽的工程）；另在 result json 的 `pool` 字段给出结构化状态（`projects` 工程清单、`storage`、`slots`，槽位含 `url`、`path`、`link`、`holds`），供调用方使用。参数 `brief`（布尔，缺省 false）：不跑 `svn status`、`changes` 一律为 null，只读状态文件，适合调用方轮询 |
 
 `listFrom` 的 `svn ls -v` 结果缓存在 `.pool/cache/`，10 分钟内直接用缓存，保证查询不会因为网络慢而超时。远端列不出来时只返回本地部分，并在 hint 里说明。
 
@@ -296,7 +297,7 @@ enable = ["art"]
 **`hold`**，参数 `branch`（必填）、`holdId`（必填）、`expectedPath`（必填，绝对路径）、`label`（可选，给人看的说明）。外部应用打开工作副本前调用：
 
 - 在池锁内一次完成：找到分支所在槽位，确认 `phase = ready` 且没有进行中的操作，再确认槽位的实际目录（解析链接后）就是调用方看到的 `expectedPath`，然后写入 `holds[holdId]`。任何一步不满足都失败且不写入，调用方应刷新后重新确认，避免保护错槽位。
-- `holdId` 由调用方决定，1–200 个可见字符，首尾不能有空白；建议带调用方前缀，如 `osglauncher:<项目>`、`osgtoolset:operation:<pid>`。同一 `holdId` 重复调用只刷新时间与说明。
+- `holdId` 由调用方决定，1–200 个可见字符，首尾不能有空白；建议带调用方前缀，如 `<应用>:<项目>`、`<应用>:op:<操作>`。同一 `holdId` 重复调用只刷新时间与说明。
 - 分支须已在池里（先 `acquire`）。不创建、不续租租约，不动文件。
 
 **`unhold`**，参数 `branch`、`holdId`（必填）、`confirmClosed`（布尔，必须为 true）、`releaseLease`（布尔，缺省 false）。
@@ -314,7 +315,7 @@ enable = ["art"]
 - 同步 `branch/` 入口（补建缺失的，删除失效的），清理超过 30 天的 patch 存档（天数可在配置中用 `patchRetentionDays` 调整）。
 - 汇总报告：恢复与校正、解除阻塞、仍阻塞、已回收、待缩容的槽位和入口变化。
 
-**`refresh`**，无参数。对工程清单里的每个分支：
+**`refresh`**，参数 `branch`（可选）。缺省时对工程清单里的每个分支，给了 `branch` 时只处理这一个分支（可以不在工程清单里，供调用方在卡片上手动更新），规则相同：
 
 - 已挂在槽位上：`svn update`，再按 `[sparse]` 重新应用稀疏规则，最后读回落后 revision。配置了 `[svnRules]` 时，更新前后各按规则处理一次，处理不了的标阻塞。
 - 没挂槽：跳过，报告“未挂槽（按需占用时分配）”。refresh 不新建、不切换、不为工程抢槽位。

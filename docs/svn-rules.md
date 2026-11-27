@@ -90,9 +90,11 @@ paths = ["Project/RawAssets/Blueprint/**/*.gl"]
 
 ```toml
 [svnRules]
-file = "C:/path/to/osg/svn-rules.toml"   # 本机绝对路径
-enable = ["art"]                          # 开启的可选类别，可为空
+enable = ["art"]                                  # 开启的可选类别，可为空
+# file = "C:/path/to/project/svn-rules.toml"      # 可选，本机绝对路径
 ```
+
+规则文件优先取环境变量 `WORKING_COPY_POOL_SVN_RULES`（绝对路径，由调用池的应用传入它自带的规则文件），没有再用 `file`；开了 `[svnRules]` 但两处都没有时，需要按规则处理的操作失败、不动工作副本。
 
 配置后：
 

@@ -31,6 +31,9 @@ const status: ToolManifest = {
   idempotent: true,
   supportsDryRun: true,
   supportsResultJson: true,
+  params: [
+    { name: "brief", type: "boolean", default: false, label: "快速模式", description: "不统计本地改动（不跑 svn status），只读池状态，适合轮询" },
+  ],
 };
 
 const acquire: ToolManifest = {
@@ -69,9 +72,9 @@ const hold: ToolManifest = {
   supportsResultJson: true,
   params: [
     { name: "branch", type: "string", required: true, label: "分支" },
-    { name: "holdId", type: "string", required: true, label: "持有者 ID", description: "调用方自定的稳定标识，如 osglauncher:<项目>；同一 ID 重复保护只刷新时间" },
+    { name: "holdId", type: "string", required: true, label: "持有者 ID", description: "调用方自定的稳定标识，如 <应用>:<会话>；同一 ID 重复保护只刷新时间" },
     { name: "expectedPath", type: "string", required: true, label: "确认的目录", description: "调用方看到的工作副本实际目录（绝对路径）；与池里不一致时拒绝，避免保护错槽位" },
-    { name: "label", type: "string", label: "说明", description: "给人看的持有者说明，如 OSGLauncher 开工" },
+    { name: "label", type: "string", label: "说明", description: "给人看的持有者说明，如 某某启动器开工" },
   ],
 };
 
@@ -104,11 +107,12 @@ const gc: ToolManifest = {
 const refresh: ToolManifest = {
   id: "refresh",
   displayName: "更新工程",
-  description: "工程清单（projects）里已挂在槽位上的分支更新到最新；没挂槽的跳过，不为它们抢槽位",
+  description: "工程清单（projects）里已挂在槽位上的分支更新到最新；没挂槽的跳过，不为它们抢槽位。给了分支时只更新这一个",
   kind: "action",
   idempotent: true,
   supportsDryRun: true,
   supportsResultJson: true,
+  params: [{ name: "branch", type: "string", label: "分支", description: "只更新这个分支（可不在工程清单里）；缺省更新整个工程清单" }],
 };
 
 const captureSparse: ToolManifest = {

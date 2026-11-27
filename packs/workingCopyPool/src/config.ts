@@ -24,8 +24,11 @@ export type PoolConfig = {
   patchRetentionDays: number;
   /** roots 至少一项；minFreeGiB 是没有单独写下限的目录使用的默认值。 */
   storage: { roots: StorageRoot[]; minFreeGiB: number };
-  /** 项目 SVN 规则（svn-rules.toml）：冲突与可丢弃类别按规则自动处理；不配置时冲突一律阻塞。 */
-  svnRules?: { file: string; enable: string[] };
+  /**
+   * 项目 SVN 规则（svn-rules.toml）：冲突与可丢弃类别按规则自动处理；不配置时冲突一律阻塞。
+   * 规则文件优先取环境变量 WORKING_COPY_POOL_SVN_RULES（由调用方传入），没有再用 file。
+   */
+  svnRules?: { file?: string; enable: string[] };
 };
 
 export class ConfigError extends UsageError {}
@@ -100,7 +103,7 @@ export function parseConfig(text: string): PoolConfig {
     fail("", "resident", "已移除：池里不再有常驻分支，需要的分支（包括 trunk）都写进 projects");
   }
   if (raw.hooks !== undefined) {
-    fail("hooks", undefined, "已移除：改用 [svnRules]（file = 项目 svn-rules.toml 的绝对路径，enable = 开启的可选丢弃类别）");
+    fail("hooks", undefined, "已移除：改用 [svnRules]（enable = 开启的可选丢弃类别；规则文件由调用方用环境变量 WORKING_COPY_POOL_SVN_RULES 传入，或写 file = 绝对路径）");
   }
   for (const key of Object.keys(raw)) {
     if (!TOP_KEYS.has(key)) fail("", key, "未知字段");
@@ -166,13 +169,16 @@ export function parseConfig(text: string): PoolConfig {
   let svnRules: PoolConfig["svnRules"];
   if (raw.svnRules !== undefined) {
     const r = table("svnRules", SVN_RULES_KEYS);
-    const file = str("svnRules", "file", r.file);
-    if (!path.isAbsolute(file) || /[\u0000-\u001f]/.test(file)) fail("svnRules", "file", `应为本机绝对路径：${file}`);
+    let file: string | undefined;
+    if (r.file !== undefined) {
+      file = str("svnRules", "file", r.file);
+      if (!path.isAbsolute(file) || /[\u0000-\u001f]/.test(file)) fail("svnRules", "file", `应为本机绝对路径：${file}`);
+    }
     const enable = strList("svnRules", "enable", r.enable);
     for (const name of enable) {
       if (!/^[A-Za-z][\w-]*$/.test(name)) fail("svnRules", "enable", `类别名不合法：${name}`);
     }
-    svnRules = { file: path.normalize(file), enable: [...new Set(enable)] };
+    svnRules = { ...(file ? { file: path.normalize(file) } : {}), enable: [...new Set(enable)] };
   }
 
   const s = table("sparse", SPARSE_KEYS);

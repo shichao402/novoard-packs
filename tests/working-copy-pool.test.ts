@@ -326,6 +326,9 @@ describe("持有保护（hold / unhold）", () => {
     const status = await run("status", {}, ctx);
     expect(status.summary).toContain("保护 1");
     expect(status.detail).toContain("保护中，持有者 OSGLauncher 工程操作（osglauncher:p1）");
+    const brief = (await run("status", { brief: true }, ctx)) as { summary?: string; pool?: { slots: Array<Record<string, unknown>> } };
+    expect(brief.summary).toBe(status.summary);
+    expect(brief.pool?.slots[0]).toMatchObject({ id: "s01", branch: "b1", url: "", state: "held", link: linkOf(root, "b1"), path: wcOf(root), changes: null });
   });
 
   it("hold 拒绝：目录不符、不在池里、未就绪、参数不合法；都不写入", async () => {
@@ -407,6 +410,16 @@ describe("持有保护（hold / unhold）", () => {
     expect(none).toMatchObject({ code: 0, skipped: true });
     expect(none.detail).toContain("projects 为空，没有要更新的工程");
 
+    const single = await run("refresh", { branch: "b1" }, ctxOf(projects));
+    expect(single).toMatchObject({ code: 0, skipped: true, summary: "b1：跳过" });
+    expect(single.detail).toMatch(/- b1：跳过：s01 受保护/);
+    expect(single.detail).not.toContain("b9");
+    expect((single as { pool?: { slots: unknown[] } }).pool?.slots).toHaveLength(1);
+    const outside = await run("refresh", { branch: "b7" }, ctxOf(makePool([])));
+    expect(outside).toMatchObject({ code: 0, skipped: true, summary: "b7：跳过" });
+    expect(outside.detail).toContain("- b7：跳过：未挂槽（按需占用时分配）");
+    await expect(run("refresh", { branch: "../x" }, ctxOf(projects))).rejects.toBeInstanceOf(UsageError);
+
     const ids = ["s01", "s02", "s03", "s04"];
     const crowded = makePool(ids.map((id, i) => slot({ id, branch: `b${i + 1}`, holds })));
     const report = await run("gc", {}, ctxOf(crowded));
@@ -427,7 +440,7 @@ describe("持有保护（hold / unhold）", () => {
 
   it("候选提示：受保护槽位写出持有者与租约", () => {
     const choices = mergeCandidates({
-      views: [{ id: "s01", branch: "b1", state: "held", phase: "ready", lease: { until: "forever", tag: "bug-1" }, lastUsed: null, behind: null, blockedReason: null, path: "", link: null, target: null, holds: [{ id: "osglauncher:p1", ...holds["osglauncher:p1"] }] }],
+      views: [{ id: "s01", branch: "b1", url: "", state: "held", phase: "ready", lease: { until: "forever", tag: "bug-1" }, lastUsed: null, behind: null, blockedReason: null, path: "", link: null, target: null, holds: [{ id: "osglauncher:p1", ...holds["osglauncher:p1"] }] }],
       state: { version: 1, slots: [] },
       config: c,
       recent: [],
@@ -500,6 +513,7 @@ describe("candidates 与 occupied", () => {
   const view = (over: object) => ({
     id: "s01",
     branch: "b1",
+    url: "",
     state: "idle" as const,
     phase: "ready" as const,
     lease: null,

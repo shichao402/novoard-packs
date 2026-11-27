@@ -43,7 +43,7 @@ export async function run(toolId: string, rawParams: Record<string, unknown> | u
       return { detail: result.detail, code: 0, choices: result.choices };
     }
     case "status": {
-      const result = await status(peekPool(ctx));
+      const result = await status(peekPool(ctx), { brief: params.brief === true });
       return { detail: result.detail, code: 0, summary: result.summary, pool: result.pool };
     }
     case "acquire":
@@ -73,7 +73,7 @@ export async function run(toolId: string, rawParams: Record<string, unknown> | u
     case "gc":
       return runGc(ctx);
     case "refresh":
-      return runRefresh(ctx);
+      return runRefresh(params, ctx);
     case "capture-sparse":
       return runCaptureSparse(params, ctx);
     default:
@@ -116,18 +116,29 @@ async function runGc(ctx: ToolRunContext): Promise<ToolRunResult> {
   return { detail: [summary, ...lines].join("\n"), code: report.errors.length ? 1 : 0, summary };
 }
 
-async function runRefresh(ctx: ToolRunContext): Promise<ToolRunResult> {
+async function runRefresh(params: Record<string, unknown>, ctx: ToolRunContext): Promise<ToolRunResult> {
   const pool = openPool(ctx);
-  if (pool.config.projects.length === 0) {
+  const only = typeof params.branch === "string" && params.branch.trim() ? params.branch.trim() : undefined;
+  if (!only && pool.config.projects.length === 0) {
     const recovered = await recover(pool);
     return { detail: `pool.toml 的 projects 为空，没有要更新的工程${recovered.length ? `；恢复与校正：${recovered.join("；")}` : ""}`, code: 0, skipped: true };
   }
-  const result = await refresh(pool);
+  const result = await refresh(pool, only);
   const failed = result.items.filter((i) => !i.ok);
   const lines = result.items.map((i) => `${i.ok ? (i.skipped ? "-" : "✓") : "✗"} ${i.branch}：${i.detail}`);
   if (result.recovered.length) lines.push(`恢复与校正：${result.recovered.join("；")}`);
-  const summary = `工程 ${result.items.length} 个：更新 ${result.items.filter((i) => i.ok && !i.skipped).length}，跳过 ${result.items.filter((i) => i.skipped).length}，失败 ${failed.length}`;
-  return { detail: [summary, ...lines].join("\n"), code: failed.length ? 1 : 0, summary };
+  const updated = result.items.filter((i) => i.ok && !i.skipped).length;
+  const skipped = result.items.filter((i) => i.skipped).length;
+  const summary = only
+    ? `${only}：${failed.length ? "更新失败" : updated ? "已更新" : "跳过"}`
+    : `工程 ${result.items.length} 个：更新 ${updated}，跳过 ${skipped}，失败 ${failed.length}`;
+  return {
+    detail: [summary, ...lines].join("\n"),
+    code: failed.length ? 1 : 0,
+    summary,
+    ...(only && skipped ? { skipped: true } : {}),
+    pool: poolView(pool, readState(pool.paths)),
+  };
 }
 
 /**
@@ -169,7 +180,8 @@ function dryRun(displayName: string, toolId: string, params: Record<string, unkn
     lines.push(`保留：${typeof params.ttl === "string" && params.ttl ? params.ttl : config.defaultTtl}${params.tag ? `，标签 ${params.tag}` : ""}`);
     lines.push(...sparsePlan(config));
   } else if (toolId === "refresh") {
-    lines.push(config.projects.length ? `工程清单：${config.projects.join("、")}（只更新已挂槽的，未挂槽的跳过）` : "projects 为空，没有要更新的工程");
+    if (typeof params.branch === "string" && params.branch) lines.push(`只更新 ${params.branch}（已挂槽才更新，未挂槽跳过）`);
+    else lines.push(config.projects.length ? `工程清单：${config.projects.join("、")}（只更新已挂槽的，未挂槽的跳过）` : "projects 为空，没有要更新的工程");
     lines.push(...sparsePlan(config));
   } else if (toolId === "gc") {
     lines.push(`超过 ${config.maxSlots} 个槽位时回收空闲槽位；删除 ${config.patchRetentionDays} 天前的存档`);
